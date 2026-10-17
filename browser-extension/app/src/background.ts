@@ -9,6 +9,7 @@ import {createDaemonClient} from "./background/daemon-client";
 import {createFeatureBridge} from "./background/feature-bridge";
 import {createMediaBridge} from "./background/media-bridge";
 import {createResourceBridge} from "./background/resource-bridge";
+import {handoffAndClearBrowserDownload} from "./background/browser-download-handoff";
 import {createTaskEventSubscriptions} from "./background/task-event-subscriptions";
 import {createTaskStore} from "./background/task-store";
 import {
@@ -22,7 +23,6 @@ import {
 import {INTERCEPT_DOWNLOADS_KEY, MEDIA_DOWNLOAD_OVERLAY_KEY,} from "./background/constants";
 import {
     cancelDownload,
-    eraseDownloadFromHistory,
     findTab,
     loadFromLocalStorage,
     openActionPopup,
@@ -535,7 +535,6 @@ chrome.webRequest.onResponseStarted.addListener(
 
 async function interceptBrowserDownload(
   downloadItem: chrome.downloads.DownloadItem,
-  options: { eraseFromHistory?: boolean } = {},
 ) {
   const traceId = createTraceId("browser_download_intercept");
   const finalUrl = downloadItem.finalUrl || downloadItem.url;
@@ -628,9 +627,6 @@ async function interceptBrowserDownload(
     if (latest?.state !== "in_progress" || !isAbsoluteDownloadPath(latest.filename)) return;
     downloadItem = latest;
     await cancelDownload(downloadItem.id);
-    if (options.eraseFromHistory) {
-      await eraseDownloadFromHistory(downloadItem.id);
-    }
   } catch (error) {
     recordClientTelemetry({
       ...commonTelemetry,
@@ -644,12 +640,24 @@ async function interceptBrowserDownload(
   }
 
   try {
-    await resourceBridge.handoffBrowserDownload(downloadItem);
+    const cleanup = await handoffAndClearBrowserDownload(
+      downloadItem,
+      resourceBridge.handoffBrowserDownload,
+    );
     recordClientTelemetry({
       ...commonTelemetry,
       event_type: "client.intercept_decision",
       status: "accepted",
       message: "browser download handed off to daemon",
+    });
+    recordClientTelemetry({
+      ...commonTelemetry,
+      event_type: "client.intercept_cleanup",
+      status: cleanup.historyCleared ? "cleared" : "warning",
+      message: cleanup.historyCleared
+        ? "intercepted browser download history entry cleared"
+        : messageFromUnknownError(cleanup.cleanupError, "browser history cleanup failed after successful handoff"),
+      details: {...commonTelemetry.details, reason: cleanup.historyCleared ? "handoff_accepted" : "history_cleanup_failed"},
     });
   } catch (error) {
     recordClientTelemetry({

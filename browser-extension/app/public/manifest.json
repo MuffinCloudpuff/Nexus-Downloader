@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "Nexus Downloader",
   "description": "Manage Nexus Downloader tasks and download browser media with the desktop app.",
-  "version": "1.4.0",
+  "version": "1.4.1",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA3tPdUDTWh0fiM1aNkhBXBOF2Wv9hwTxjtFqlLr5uyh6ljQMQv1oXvMtaoRI3+kU1bvAg+xzDxvi0Fd5nj/T2cAS5zd/9adBH7vR2KRA/pjOOk70Qna7RUWQm6IOwhz3woCZp024UqBcqHleRH2BIKBrrgu4enwRK5W9emEsE/Xfuk8pKymZo6y45BD394+4ss1oAfnaB2Daac3IxqHiMuB0nuVPua5+aqCtSU2vuC1Joqe6+btKZIjdC5jTeDcbChl+Tg51VhoG15a1Tsdb+apsfwq9538uutbH4HNSbfzhf0Ng5RRK2Xt9SMOj9gkaDutdE3oE20iYM9dSS83dNwQIDAQAB",
   "permissions": [
     "nativeMessaging",

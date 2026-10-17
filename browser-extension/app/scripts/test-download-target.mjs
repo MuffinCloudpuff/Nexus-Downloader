@@ -9,12 +9,14 @@ const manifest = JSON.parse(await readFile("public/manifest.json", "utf8"));
 assert.match(manifest.content_security_policy.extension_pages, /img-src 'self' http:\/\/127\.0\.0\.1:14371;/);
 
 const listeners = {};
+const cleared = [];
 let current;
 globalThis.self = globalThis;
 globalThis.chrome = {
   storage: {local: {get: async values => values, set: async () => {}}},
   runtime: {getManifest: () => ({version: "test"}), getURL: (p) => `chrome-extension://test/${p}`},
   downloads: {
+    erase: (query, callback) => { cleared.push(query); callback([query.id]); },
     onDeterminingFilename: {addListener: fn => listeners.suggest = fn},
     onChanged: {addListener: fn => listeners.changed = fn},
     search: (_query, callback) => queueMicrotask(() => callback(current ? [current] : [])),
@@ -26,11 +28,12 @@ const result = await build({stdin: {contents: `
   export {taskVisual} from "./src/shared/utils";
   export {TaskCard} from "./src/popup/components/TaskCard";
   export {createResourceBridge} from "./src/background/resource-bridge";
+  export {handoffAndClearBrowserDownload} from "./src/background/browser-download-handoff";
 `, resolveDir: process.cwd(), loader: "ts"}, bundle: true, platform: "node", format: "cjs",
   packages: "external", write: false});
 const module = {exports: {}};
 new Function("module", "exports", "require", result.outputFiles[0].text)(module, module.exports, createRequire(import.meta.url));
-const {listenForConfirmedDownloadTargets, isAbsoluteDownloadPath, daemonTaskToGenericTask, taskVisual, TaskCard, createResourceBridge} = module.exports;
+const {listenForConfirmedDownloadTargets, isAbsoluteDownloadPath, daemonTaskToGenericTask, taskVisual, TaskCard, createResourceBridge, handoffAndClearBrowserDownload} = module.exports;
 for (const path of ["D:\\用户目录\\原图 (2).jpg", "C:/chosen/image.png", "\\\\server\\share\\image.jpg", "/home/user/image.jpg"]) {
   assert.ok(isAbsoluteDownloadPath(path), path);
 }
@@ -76,10 +79,16 @@ const archive = {...photo, taskId: "zip", title: "a.zip", outputPath: "D:/a.zip"
 assert.match(renderToStaticMarkup(React.createElement(TaskCard, {task: archive, onAction: () => {}})), /system-icon\?ext=zip/);
 let dispatched;
 const bridge = createResourceBridge({createTask: async req => { dispatched = req; return {ok: true}; }});
-await bridge.handoffBrowserDownload({id: 6, filename: "E:/用户选择/renamed.jpg", url: "https://example.test/image?format=png",
-  mime: "image/jpeg", state: "in_progress", totalBytes: 100});
+const historyCleanup = await handoffAndClearBrowserDownload({id: 6, filename: "E:/用户选择/renamed.jpg", url: "https://example.test/image?format=png",
+  mime: "image/jpeg", state: "in_progress", totalBytes: 100}, bridge.handoffBrowserDownload);
 assert.equal(dispatched.payload.save_path, "E:/用户选择/renamed.jpg");
 assert.equal(dispatched.payload.filename, "renamed.jpg");
 assert.equal(dispatched.payload.mime, "image/jpeg");
+assert.equal(historyCleanup.historyCleared, true);
+assert.deepEqual(cleared, [{id: 6}]);
+const rejected = createResourceBridge({createTask: async () => ({ok: false, message: "task rejected"})});
+await assert.rejects(handoffAndClearBrowserDownload({id: 8, filename: "E:/用户选择/file.zip", url: "https://example.test/file.zip",
+  mime: "application/zip", state: "in_progress"}, rejected.handoffBrowserDownload), /task rejected/);
+assert.deepEqual(cleared, [{id: 6}]); // Rejection must leave browser history untouched.
 await assert.rejects(bridge.handoffBrowserDownload({id: 7, filename: "not-confirmed.jpg"}), /完整保存路径/);
 console.log("download target tests passed: confirmed path, Save As cancellation, duplicate events, completed files, image classification and Windows icon URLs");
