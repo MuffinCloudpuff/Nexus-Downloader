@@ -1,4 +1,5 @@
 **/target/
+/nexus-downloader/src-tauri/gen/
 **/node_modules/
 **/dist/
 **/build/
@@ -7,6 +8,7 @@
 **/firefox/
 /dist-portable/
 /.publish/
+/.release/
 /config/
 /data/
 /logs/

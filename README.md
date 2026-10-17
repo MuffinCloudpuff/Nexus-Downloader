@@ -8,6 +8,14 @@ buttons on YouTube, Bilibili, and X.
 WebView，只保留下载服务；在 YouTube、哔哩哔哩和 X 的视频旁直接显示下载按钮。
 托盘、桌面界面和浏览器扩展共用同一份任务状态。
 
+## Download
+
+Get the Windows x64 portable application and the separate Chrome / Edge extension
+from [GitHub Releases](https://github.com/MuffinCloudpuff/Nexus-Downloader/releases).
+The portable package includes FFmpeg, ffprobe and Deno; WebView2 Runtime is required.
+Packages contain no developer settings, pairing tokens or download history.
+See [v0.1.0 release notes](docs/releases/v0.1.0.md) for installation and checks.
+
 ## Highlights
 
 - **Rust download engine:** adaptive HTTP range connections, resumable file
