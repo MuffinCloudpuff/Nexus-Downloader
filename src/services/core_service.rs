@@ -538,10 +538,18 @@ impl CoreService {
 
             let executor = DownloadExecutor::new(parts.resume_store.clone());
             let plan = ExecutionPlan::from_task(task.clone());
-            match executor
-                .execute(plan, &parts.task_service, token.clone())
-                .await
-            {
+            let result = async {
+                let output_path = executor
+                    .execute(plan, &parts.task_service, token.clone())
+                    .await?;
+                let mut completed_task = task.clone();
+                completed_task.path = output_path.clone();
+                task_artifact_service::cleanup_task_temporary_files(&completed_task).await?;
+                parts.resume_store.delete_manifest(&task.id).await?;
+                Ok::<String, anyhow::Error>(output_path)
+            }
+            .await;
+            match result {
                 Ok(output_path) => {
                     tracing::info!(
                         task_id = %task.id,

@@ -174,9 +174,13 @@ impl ResumeStore {
     }
 
     pub async fn delete_manifest(&self, task_id: &str) -> anyhow::Result<()> {
-        let path = self.base_dir.join(format!("{}.manifest.json", task_id));
-        if path.exists() {
-            tokio::fs::remove_file(path).await?;
+        for suffix in ["manifest.json", "manifest.json.tmp"] {
+            let path = self.base_dir.join(format!("{task_id}.{suffix}"));
+            match tokio::fs::remove_file(path).await {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error.into()),
+            }
         }
         Ok(())
     }

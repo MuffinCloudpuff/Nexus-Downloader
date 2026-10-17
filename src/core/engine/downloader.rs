@@ -1354,7 +1354,7 @@ impl UniversalDownloader {
             }
         }
 
-        let temp_dir = Path::new("temp").join(&task_id);
+        let temp_dir = crate::services::task_artifact_service::task_work_dir(&task)?.join("hls");
         let video_progress_end = if audio_playlist_url.is_some() {
             0.9
         } else {
@@ -1450,7 +1450,9 @@ impl UniversalDownloader {
         }
         tokio::fs::copy(&remuxed_path, &output_path).await?;
         tracing::info!(task_id = %task_id, received_bytes = total_received, requires_audio, "hls download completed");
-        let _ = tokio::fs::remove_dir_all(&temp_dir).await;
+        crate::services::task_artifact_service::cleanup_task_temporary_files(&task)
+            .await
+            .context("HLS output saved, but temporary-file cleanup failed")?;
         Ok(output_path.display().to_string())
     }
 

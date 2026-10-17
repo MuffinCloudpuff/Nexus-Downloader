@@ -54,7 +54,8 @@ impl DashDownloader {
             .unwrap_or_else(|| Path::new("downloads"));
         tokio::fs::create_dir_all(output_parent).await?;
 
-        let work_dir = Path::new("temp").join(&task.id).join("bili_dash");
+        let work_dir =
+            crate::services::task_artifact_service::task_work_dir(&task)?.join("bili_dash");
         tokio::fs::create_dir_all(&work_dir).await?;
 
         let video_file = work_dir.join(format!("{}_video.m4s", task.id));
@@ -107,8 +108,9 @@ impl DashDownloader {
             .update_task_status(&task.id, TaskStatus::Merging, 0.92, 0, 0)
             .await;
 
-        let mut child = tokio::process::Command::new("ffmpeg")
+        let child = crate::services::yt_dlp_update_service::hidden_command(Path::new("ffmpeg"))
             .arg("-y") // 覆盖输出
+            .args(["-nostdin", "-hide_banner", "-loglevel", "error"])
             .arg("-i")
             .arg(video_file.to_str().unwrap())
             .arg("-i")
@@ -124,14 +126,23 @@ impl DashDownloader {
             .spawn()
             .context("未能启动 FFmpeg 进程，请确保已安装 FFmpeg 且在环境变量中。")?;
 
-        let status = child.wait().await?;
-        if status.success() {
+        let output = tokio::select! {
+            _ = token.cancelled() => anyhow::bail!("任务已取消"),
+            output = child.wait_with_output() => output?,
+        };
+        if output.status.success() {
             info!("{:?}", BiliDashEvent::FfmpegMergeCompleted);
             // 清理缓存
-            let _ = tokio::fs::remove_dir_all(work_dir).await;
+            crate::services::task_artifact_service::cleanup_task_temporary_files(&task)
+                .await
+                .context("Output saved, but temporary-file cleanup failed")?;
             Ok(output_file.display().to_string())
         } else {
-            let err_msg = format!("FFmpeg 异常退出: {}", status);
+            let err_msg = format!(
+                "FFmpeg 异常退出: {}: {}",
+                output.status,
+                String::from_utf8_lossy(&output.stderr)
+            );
             error!("{:?}", BiliDashEvent::FfmpegMergeFailed(err_msg.clone()));
             anyhow::bail!(err_msg)
         }

@@ -88,6 +88,20 @@ closing the UI; choosing **Exit App** exits the application.
 The backend listens on `127.0.0.1:14371`. Pairing and settings remain local;
 never publish generated `config/`, `data/`, or `logs/` folders.
 
+### Download temporary files
+
+Media downloads use a per-task `.<task-id>.parts` directory beside the chosen
+output file. Bilibili DASH, HLS (including X), and YouTube intermediates all
+follow the output location, not the installation drive or system temporary
+directory. Ordinary HTTP downloads continue writing ranges directly to the
+destination file, without a second fragment-file copy.
+
+After download/merge succeeds, task workspaces and resume records are removed.
+Failed or paused downloads may retain their workspace for inspection or retry.
+Deleting a task removes its output, workspace and resume records; cleanup also
+recognizes task-scoped folders left by older versions under the program's
+`temp/` directory. Neighboring tasks' files are not removed.
+
 ## Build and load the browser extension
 
 ```powershell
@@ -129,6 +143,17 @@ Media regression tests synthesize local audio/video with FFmpeg and inspect the
 result with ffprobe. They cover separate HLS audio, embedded audio, direct media
 playlists, intentional video-only streams, and missing-audio failures. The
 external yt-dlp release-download test is opt-in and ignored by default.
+
+To check an already installed, running portable backend with locally synthesized
+media, run the following from the repository root (FFmpeg, ffprobe and Node.js
+must be on `PATH`):
+
+```powershell
+node tests/installed_workspace_smoke.mjs 'D:/path/to/NexusDownloaderPortable'
+```
+
+It creates and removes only its own test tasks, verifies adjacent workspaces and
+audio/video output, and tests deleting a task while its download is active.
 
 ## Third-party components
 

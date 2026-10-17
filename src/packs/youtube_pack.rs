@@ -255,10 +255,7 @@ impl YoutubeDownloader {
         let engine = crate::core::engine::downloader::UniversalDownloader::new();
 
         let final_output = Path::new(&task.path).to_path_buf();
-        let base_dir = final_output
-            .parent()
-            .unwrap_or_else(|| Path::new("downloads"))
-            .join(format!(".{}.parts", task.id));
+        let base_dir = crate::services::task_artifact_service::task_work_dir(task)?;
         tokio::fs::create_dir_all(&base_dir).await?;
 
         let safe_title = crate::utils::to_safe_filename(&task.title, "Y-youtube_video");
@@ -345,9 +342,7 @@ impl YoutubeDownloader {
                 return Err(format!("FFmpeg merge failed: {}", error.trim()).into());
             }
 
-            for file in downloaded_files {
-                let _ = tokio::fs::remove_file(file).await;
-            }
+            crate::services::task_artifact_service::cleanup_task_temporary_files(task).await?;
         }
 
         tracing::info!("✅ YouTube download completed entirely in Rust Engine!");

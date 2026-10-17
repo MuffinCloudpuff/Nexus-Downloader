@@ -3,6 +3,9 @@
 use axum::{Router, http::StatusCode, response::IntoResponse};
 use gd3_daemon::core::engine::downloader::UniversalDownloader;
 use gd3_daemon::core::models::{PackId, Stage, StageType, Task};
+use gd3_daemon::core::resume::ResumeStore;
+use gd3_daemon::packs::bili_pack::dash_downloader::DashDownloader;
+use gd3_daemon::services::task_artifact_service::{cleanup_task_artifacts, task_work_dir};
 use gd3_daemon::services::task_service::TaskService;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -47,6 +50,7 @@ struct Fixture {
     root: PathBuf,
     task: Task,
     requests: Arc<Mutex<Vec<String>>>,
+    workspace_observed: Arc<std::sync::atomic::AtomicBool>,
     server: tokio::task::JoinHandle<()>,
 }
 
@@ -131,6 +135,22 @@ impl Fixture {
                 );
             }
         }
+        // Also expose direct fMP4 resources for the Bilibili/captured-DASH path.
+        for directory in ["video", "audio"] {
+            let mut joined = files[&format!("/{directory}/init.mp4")].clone();
+            let mut paths: Vec<_> = files
+                .keys()
+                .filter(|name| {
+                    name.starts_with(&format!("/{directory}/")) && name.ends_with(".m4s")
+                })
+                .cloned()
+                .collect();
+            paths.sort();
+            for name in paths {
+                joined.extend_from_slice(&files[&name]);
+            }
+            files.insert(format!("/{directory}.mp4"), joined);
+        }
         let separate_master = "#EXTM3U\n\
             #EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"low\",NAME=\"wrong\",DEFAULT=YES,URI=\"wrong.m3u8\"\n\
             #EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"high\",NAME=\"audio\",DEFAULT=YES,URI=\"audio/index.m3u8\"\n\
@@ -166,13 +186,21 @@ impl Fixture {
             files.extend(replacements);
         }
         let requests = Arc::new(Mutex::new(Vec::new()));
+        let workspace_observed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let observed = workspace_observed.clone();
+        let expected_workspace = root.join(format!(".{id}.parts"));
         let request_log = requests.clone();
         let files = Arc::new(files);
         let router = Router::new().fallback(
             move |uri: axum::http::Uri, headers: axum::http::HeaderMap| {
                 let files = files.clone();
                 let requests = request_log.clone();
+                let observed = observed.clone();
+                let expected_workspace = expected_workspace.clone();
                 async move {
+                    if expected_workspace.is_dir() {
+                        observed.store(true, std::sync::atomic::Ordering::SeqCst);
+                    }
                     requests.lock().unwrap().push(uri.path().to_owned());
                     if headers.get("x-media-test").and_then(|v| v.to_str().ok())
                         != Some("inherited")
@@ -180,7 +208,30 @@ impl Fixture {
                         return StatusCode::UNAUTHORIZED.into_response();
                     }
                     match files.get(uri.path()) {
-                        Some(body) => (StatusCode::OK, body.clone()).into_response(),
+                        Some(body) => {
+                            if let Some(range) = headers
+                                .get("range")
+                                .and_then(|v| v.to_str().ok())
+                                .and_then(|v| v.strip_prefix("bytes="))
+                            {
+                                let (start, end) = range.split_once('-').unwrap();
+                                let start: usize = start.parse().unwrap();
+                                let end: usize =
+                                    end.parse().unwrap_or(body.len() - 1).min(body.len() - 1);
+                                (
+                                    StatusCode::PARTIAL_CONTENT,
+                                    [(
+                                        "content-range",
+                                        format!("bytes {start}-{end}/{}", body.len()),
+                                    )],
+                                    body[start..=end].to_vec(),
+                                )
+                                    .into_response()
+                            } else {
+                                (StatusCode::OK, [("accept-ranges", "bytes")], body.clone())
+                                    .into_response()
+                            }
+                        }
                         None => StatusCode::NOT_FOUND.into_response(),
                     }
                 }
@@ -209,6 +260,7 @@ impl Fixture {
             root,
             task,
             requests,
+            workspace_observed,
             server,
         }
     }
@@ -253,7 +305,6 @@ impl Drop for Fixture {
     fn drop(&mut self) {
         self.server.abort();
         let _ = std::fs::remove_dir_all(&self.root);
-        let _ = std::fs::remove_dir_all(Path::new("temp").join(&self.task.id));
     }
 }
 
@@ -262,6 +313,13 @@ async fn hls_separate_fmp4_audio_is_downloaded_and_mapped_into_output() {
     let fixture = Fixture::new(Mode::Separate).await;
     fixture.download().await.unwrap();
     assert_eq!(fixture.codecs(), ["video", "audio"]);
+    assert!(
+        fixture
+            .workspace_observed
+            .load(std::sync::atomic::Ordering::SeqCst)
+    );
+    assert!(!task_work_dir(&fixture.task).unwrap().exists());
+    assert!(!Path::new("temp").join(&fixture.task.id).exists());
     let requests = fixture.requests.lock().unwrap();
     assert!(
         requests
@@ -276,6 +334,10 @@ async fn hls_unavailable_audio_is_failure_and_does_not_replace_existing_output()
     let fixture = Fixture::new(Mode::MissingAudio).await;
     std::fs::write(&fixture.task.path, b"previous output").unwrap();
     assert!(fixture.download().await.is_err());
+    let work_dir = task_work_dir(&fixture.task).unwrap();
+    assert_eq!(work_dir.parent(), Some(fixture.root.as_path()));
+    assert!(work_dir.join("hls/video/combined.mp4").exists());
+    assert!(!Path::new("temp").join(&fixture.task.id).exists());
     assert_eq!(
         std::fs::read(&fixture.task.path).unwrap(),
         b"previous output"
@@ -323,4 +385,54 @@ async fn hls_declared_muxed_audio_must_exist() {
             .contains("required audio")
     );
     assert!(!Path::new(&fixture.task.path).exists());
+}
+
+#[tokio::test]
+async fn deleting_failed_hls_task_removes_adjacent_workspace() {
+    let fixture = Fixture::new(Mode::InvalidAudio).await;
+    assert!(fixture.download().await.is_err());
+    assert!(task_work_dir(&fixture.task).unwrap().exists());
+    let resume_store = ResumeStore::new(fixture.root.join("resumes").to_str().unwrap());
+    resume_store.init().await.unwrap();
+    cleanup_task_artifacts(&fixture.task, &resume_store)
+        .await
+        .unwrap();
+    assert!(!task_work_dir(&fixture.task).unwrap().exists());
+    assert!(fixture.root.exists());
+}
+
+#[tokio::test]
+async fn bilibili_dash_uses_target_workspace_and_cleans_it_after_merge() {
+    let fixture = Fixture::new(Mode::Separate).await;
+    let mut task = fixture.task.clone();
+    let origin = task.url.trim_end_matches("/master.m3u8").to_string();
+    task.stages = vec![
+        Stage {
+            url: format!("{origin}/video.mp4"),
+            ..task.stages[0].clone()
+        },
+        Stage {
+            stage_index: 1,
+            stage_type: StageType::Audio,
+            url: format!("{origin}/audio.mp4"),
+            ..task.stages[0].clone()
+        },
+    ];
+    let service = TaskService::new(fixture.root.to_str().unwrap());
+    let store = Arc::new(ResumeStore::new(
+        fixture.root.join("resumes").to_str().unwrap(),
+    ));
+    store.init().await.unwrap();
+    DashDownloader::new()
+        .download_and_merge(task.clone(), &service, store, CancellationToken::new())
+        .await
+        .unwrap();
+    assert_eq!(fixture.codecs(), ["video", "audio"]);
+    assert!(
+        fixture
+            .workspace_observed
+            .load(std::sync::atomic::Ordering::SeqCst)
+    );
+    assert!(!task_work_dir(&task).unwrap().exists());
+    assert!(!Path::new("temp").join(&task.id).exists());
 }
