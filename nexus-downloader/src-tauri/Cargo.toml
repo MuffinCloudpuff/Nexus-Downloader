@@ -1,0 +1,25 @@
+[package]
+name = "nexus-downloader"
+version = "0.0.0"
+description = "Nexus Downloader desktop shell"
+authors = ["gd3-daemon"]
+edition = "2021"
+
+[lib]
+name = "nexus_downloader_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["tray-icon", "image-ico"] }
+image = { version = "0.25", default-features = false, features = ["png"] }
+base64 = "0.22"
+tauri-plugin-dialog = "2"
+tauri-plugin-notification = "2"
+tauri-plugin-opener = "2"
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.61", features = ["Win32_UI_Shell", "Win32_UI_WindowsAndMessaging", "Win32_Graphics_Gdi", "Win32_Foundation", "Win32_Storage_FileSystem"] }
+winreg = "0.55"
