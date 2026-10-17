@@ -18,7 +18,7 @@
   ],
   "host_permissions": ["<all_urls>"],
   "content_security_policy": {
-    "extension_pages": "default-src 'self'; script-src 'self'; object-src 'self'; style-src 'self' 'unsafe-inline'; connect-src http://127.0.0.1:* http://localhost:* ws://127.0.0.1:* ws://localhost:* wss://127.0.0.1:* wss://localhost:*;"
+    "extension_pages": "default-src 'self'; script-src 'self'; object-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' http://127.0.0.1:14371; connect-src http://127.0.0.1:* http://localhost:* ws://127.0.0.1:* ws://localhost:* wss://127.0.0.1:* wss://localhost:*;"
   },
   "action": {
     "default_title": "Nexus Downloader",

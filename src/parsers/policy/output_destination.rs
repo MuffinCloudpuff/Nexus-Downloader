@@ -11,6 +11,13 @@ pub fn apply_output_destination(
     category: &OutputCategory,
     settings: &AppSettingsDto,
 ) -> ExecutionPlan {
+    // Preserve the user's exact filename and directory; category routing is only
+    // a default for tasks without a browser-confirmed destination.
+    if let Some(path) = cmd.save_path.as_ref() {
+        plan.output = OutputTarget::File { path: path.clone() };
+        plan.output_category = Some(category.clone());
+        return plan;
+    }
     let filename = final_filename(cmd, &plan);
     let directory = category_directory(category, settings);
     let final_path = Path::new(&directory).join(filename);
@@ -31,6 +38,7 @@ pub fn category_directory(category: &OutputCategory, settings: &AppSettingsDto) 
             match category {
                 OutputCategory::Video => root.join("video").to_string_lossy().to_string(),
                 OutputCategory::Audio => root.join("audio").to_string_lossy().to_string(),
+                OutputCategory::Image => root.join("image").to_string_lossy().to_string(),
                 OutputCategory::Document => root.join("document").to_string_lossy().to_string(),
                 OutputCategory::Archive => root.join("archive").to_string_lossy().to_string(),
                 OutputCategory::Program => root.join("program").to_string_lossy().to_string(),
@@ -40,6 +48,7 @@ pub fn category_directory(category: &OutputCategory, settings: &AppSettingsDto) 
         DownloadDirectoryMode::Custom => match category {
             OutputCategory::Video => settings.custom_paths.video.clone(),
             OutputCategory::Audio => settings.custom_paths.audio.clone(),
+            OutputCategory::Image => settings.custom_paths.image.clone(),
             OutputCategory::Document => settings.custom_paths.document.clone(),
             OutputCategory::Archive => settings.custom_paths.archive.clone(),
             OutputCategory::Program => settings.custom_paths.program.clone(),
@@ -48,6 +57,7 @@ pub fn category_directory(category: &OutputCategory, settings: &AppSettingsDto) 
         DownloadDirectoryMode::SystemDefault => match category {
             OutputCategory::Video => settings.system_paths.video.clone(),
             OutputCategory::Audio => settings.system_paths.audio.clone(),
+            OutputCategory::Image => settings.system_paths.image.clone(),
             OutputCategory::Document => settings.system_paths.document.clone(),
             OutputCategory::Archive => settings.system_paths.archive.clone(),
             OutputCategory::Program => settings.system_paths.program.clone(),
@@ -65,6 +75,38 @@ fn final_filename(cmd: &CreateTaskCommand, plan: &ExecutionPlan) -> String {
         ExecutionKind::YouTubeExternal => media_filename(cmd, plan, "mp4"),
         ExecutionKind::HttpFile | ExecutionKind::BitTorrent => generic_filename(cmd, plan),
     }
+}
+
+/// Never silently route an invalid explicit destination to a default folder.
+pub fn validate_save_path(cmd: &CreateTaskCommand) -> Result<(), String> {
+    let Some(value) = cmd.save_path.as_deref() else {
+        return Ok(());
+    };
+    let path = Path::new(value);
+    if cmd.source.as_deref() != Some("download")
+        || !reqwest::Url::parse(&cmd.url).is_ok_and(|url| matches!(url.scheme(), "http" | "https"))
+        || !path.is_absolute()
+        || path.file_name().is_none()
+        || value.contains('\0')
+        || path
+            .components()
+            .any(|part| matches!(part, std::path::Component::ParentDir))
+    {
+        return Err("save_path must be a browser-confirmed absolute file path".into());
+    }
+    #[cfg(windows)]
+    {
+        // Reject device namespaces and alternate data streams. Regular drive
+        // paths and UNC shares selected in the browser remain supported.
+        if value.starts_with(r"\\?\")
+            || value.starts_with(r"\\.\")
+            || value.get(2..).is_some_and(|tail| tail.contains(':'))
+            || value.ends_with(['/', '\\'])
+        {
+            return Err("save_path is not a regular file path".into());
+        }
+    }
+    Ok(())
 }
 
 fn generic_filename(cmd: &CreateTaskCommand, plan: &ExecutionPlan) -> String {
@@ -256,6 +298,7 @@ mod tests {
             client_context: None,
             decrypted_cookies: None,
             filename: None,
+            save_path: None,
             mime: Some("video/mp4".into()),
             size: None,
             supports_range: None,
@@ -308,6 +351,68 @@ mod tests {
         assert_eq!(
             output_path(&plan),
             PathBuf::from("D:/videos").join("X-linky (@linky)-2063456657753944064.mp4")
+        );
+    }
+
+    #[test]
+    fn explicit_browser_path_wins_in_every_directory_mode() {
+        use crate::protocol::settings::DownloadDirectoryMode::*;
+        for mode in [Flat, Categorized, Custom, SystemDefault] {
+            let mut cmd = command();
+            cmd.source = Some("download".into());
+            cmd.filename = Some("different-name.jpg".into());
+            let chosen = std::env::temp_dir()
+                .join("用户选择的目录")
+                .join("原图 (2).jpg");
+            cmd.save_path = Some(chosen.to_string_lossy().to_string());
+            assert!(validate_save_path(&cmd).is_ok());
+            let settings = AppSettingsDto {
+                directory_mode: mode,
+                ..Default::default()
+            };
+            let result = apply_output_destination(&cmd, plan(), &OutputCategory::Image, &settings);
+            assert_eq!(output_path(&result), chosen);
+            assert_eq!(result.output_category, Some(OutputCategory::Image));
+        }
+    }
+
+    #[test]
+    fn invalid_explicit_paths_are_rejected_not_rerouted() {
+        let mut cmd = command();
+        cmd.source = Some("download".into());
+        for value in ["", "relative/photo.jpg", "D:photo.jpg", "photo\0.jpg"] {
+            cmd.save_path = Some(value.into());
+            assert!(validate_save_path(&cmd).is_err(), "{value:?}");
+        }
+        cmd.save_path = Some(
+            std::env::temp_dir()
+                .join("../photo.jpg")
+                .display()
+                .to_string(),
+        );
+        assert!(validate_save_path(&cmd).is_err());
+        cmd.save_path = Some(std::env::temp_dir().join("photo.jpg").display().to_string());
+        cmd.source = Some("page_media".into());
+        assert!(validate_save_path(&cmd).is_err());
+        #[cfg(windows)]
+        for value in [
+            r"\\.\NUL",
+            r"\\?\D:\photo.jpg",
+            r"D:\photo.jpg:stream",
+            r"D:\photos\",
+        ] {
+            cmd.source = Some("download".into());
+            cmd.save_path = Some(value.into());
+            assert!(validate_save_path(&cmd).is_err(), "{value:?}");
+        }
+    }
+
+    #[test]
+    fn images_have_category_directories_without_an_explicit_path() {
+        let settings = AppSettingsDto::default();
+        assert_eq!(
+            PathBuf::from(category_directory(&OutputCategory::Image, &settings)),
+            PathBuf::from("./downloads/image")
         );
     }
 }

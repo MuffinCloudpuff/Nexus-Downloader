@@ -39,7 +39,7 @@ export interface GenericTaskSummary {
   canOpenFolder: boolean;
   fileExt: string;
   packName: string;
-  outputCategory?: "video" | "audio" | "document" | "archive" | "program" | "other";
+  outputCategory?: "video" | "audio" | "image" | "document" | "archive" | "program" | "other";
   outputPath?: string;
   artifactState?: "unknown" | "available" | "missing" | "moved" | string;
   eventCursor?: number;

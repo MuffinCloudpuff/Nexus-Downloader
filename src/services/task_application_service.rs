@@ -61,6 +61,13 @@ impl TaskApplicationService {
             });
         }
 
+        output_destination::validate_save_path(&cmd).map_err(|message| TaskError {
+            code: ErrorCode::InvalidRequest,
+            message,
+            retryable: false,
+            stage: Some("destination".to_string()),
+        })?;
+
         // Idempotency check
         if let Some(task) = self.core_service.get_task_by_request_id(&req_id).await {
             if task.payload_fingerprint.as_deref() != Some(cmd.payload_fingerprint.as_str()) {
@@ -252,6 +259,7 @@ mod tests {
                     encrypted_cookies: None,
                     cookie_iv: None,
                     filename: None,
+                    save_path: None,
                     mime: None,
                     size: None,
                     supports_range: None,

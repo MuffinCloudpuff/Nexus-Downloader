@@ -27,6 +27,7 @@ import {
 } from "./constants";
 import {bridgeStorageSet, findTab, loadFromBridgeStorage, queryTabs,} from "./chrome-helpers";
 import { encryptCookies, getDomainCookies, getUrlCookies } from "./crypto";
+import {isAbsoluteDownloadPath} from "./browser-download-target";
 
 type HeaderSnapshot = {
   url: string;
@@ -1206,6 +1207,9 @@ export function createResourceBridge(options: {
   }
 
   async function handoffBrowserDownload(downloadItem: chrome.downloads.DownloadItem) {
+    if (!isAbsoluteDownloadPath(downloadItem.filename)) {
+      throw new Error("浏览器尚未确认完整保存路径，不接管此次下载");
+    }
     const traceId = traceIdFor("browser_download");
     const finalUrl = downloadItem.finalUrl || downloadItem.url;
     const matchedResource = findResourceByUrl(finalUrl) ?? findResourceByUrl(downloadItem.url);
@@ -1234,7 +1238,8 @@ export function createResourceBridge(options: {
           url: finalUrl,
           headers,
           filename: resolvedFilename,
-          mime: matchedResource?.mime || mimeFromUrl(finalUrl) || undefined,
+          save_path: downloadItem.filename,
+          mime: downloadItem.mime || matchedResource?.mime || mimeFromUrl(finalUrl) || undefined,
           size:
             typeof downloadItem.totalBytes === "number" && downloadItem.totalBytes > 0
               ? downloadItem.totalBytes

@@ -30,6 +30,7 @@ import type { DownloadTask, TaskType } from "../types";
 export interface DownloadPaths {
   video: string;
   audio: string;
+  image: string;
   document: string;
   archive: string;
   program: string;
@@ -96,6 +97,7 @@ const AppContext = createContext<AppState | undefined>(undefined);
 const DEFAULT_PATHS: DownloadPaths = {
   video: "D:/Nexus/Video",
   audio: "D:/Nexus/Audio",
+  image: "D:/Nexus/Image",
   document: "D:/Nexus/Document",
   archive: "D:/Nexus/Archive",
   program: "D:/Nexus/Program",

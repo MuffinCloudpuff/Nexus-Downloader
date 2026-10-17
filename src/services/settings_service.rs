@@ -86,6 +86,9 @@ fn apply_patch(settings: &mut AppSettingsDto, patch: PatchAppSettingsDto) {
                 if let Some(path) = user_dirs.audio_dir() {
                     settings.system_paths.audio = resolve_canonical_path(path.to_path_buf());
                 }
+                if let Some(path) = user_dirs.picture_dir() {
+                    settings.system_paths.image = resolve_canonical_path(path.to_path_buf());
+                }
                 if let Some(path) = user_dirs.document_dir() {
                     settings.system_paths.document = resolve_canonical_path(path.to_path_buf());
                 }
@@ -99,6 +102,9 @@ fn apply_patch(settings: &mut AppSettingsDto, patch: PatchAppSettingsDto) {
         }
     }
     if let Some(paths) = patch.custom_paths {
+        if let Some(value) = paths.image {
+            settings.custom_paths.image = value;
+        }
         if let Some(value) = paths.video {
             settings.custom_paths.video = value;
         }
@@ -142,6 +148,10 @@ fn normalize_settings(mut settings: AppSettingsDto) -> AppSettingsDto {
     normalize_path(
         &mut settings.custom_paths.audio,
         &defaults.custom_paths.audio,
+    );
+    normalize_path(
+        &mut settings.custom_paths.image,
+        &defaults.custom_paths.image,
     );
     normalize_path(
         &mut settings.custom_paths.document,
@@ -198,6 +208,7 @@ async fn validate_settings_paths(settings: &AppSettingsDto) -> Result<()> {
     validate_directory("categorized_root", &settings.categorized_root).await?;
     validate_directory("custom_paths.video", &settings.custom_paths.video).await?;
     validate_directory("custom_paths.audio", &settings.custom_paths.audio).await?;
+    validate_directory("custom_paths.image", &settings.custom_paths.image).await?;
     validate_directory("custom_paths.document", &settings.custom_paths.document).await?;
     validate_directory("custom_paths.archive", &settings.custom_paths.archive).await?;
     validate_directory("custom_paths.program", &settings.custom_paths.program).await?;

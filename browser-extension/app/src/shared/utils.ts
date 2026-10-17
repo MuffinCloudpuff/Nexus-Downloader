@@ -523,6 +523,7 @@ export function taskActionLabel(task: GenericTaskSummary): string {
 }
 
 export function taskVisual(task: GenericTaskSummary): { kind: VisualKind } {
+  if (task.outputCategory === "image") return {kind: "image"};
   const extension = fileExtension(task.fileExt || task.title);
   return {
     kind: visualKindOf({

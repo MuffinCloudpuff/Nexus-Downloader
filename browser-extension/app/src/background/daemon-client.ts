@@ -192,6 +192,17 @@ export function createDaemonClient() {
     });
   }
 
+  async function supportsBrowserSavePath(): Promise<boolean> {
+    try {
+      const capabilities = await requestJson<{browser_download_save_path?: boolean}>(
+        "/api/capabilities", {method: "GET"},
+      );
+      return capabilities?.browser_download_save_path === true;
+    } catch {
+      return false;
+    }
+  }
+
   async function sendTaskCommand(
     taskId: string,
     command: "pause" | "resume" | "cancel" | "delete",
@@ -463,6 +474,7 @@ export function createDaemonClient() {
     buildSnapshot,
     connect,
     createTask,
+    supportsBrowserSavePath,
     ensureReconnectAlarm,
     getTask,
     getTaskEvents,

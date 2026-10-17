@@ -26,6 +26,9 @@ pub struct CreateTaskPayload {
     pub cookie_iv: Option<String>,
     #[serde(default)]
     pub filename: Option<String>,
+    /// Final absolute target confirmed by the browser (not a suggested filename).
+    #[serde(default)]
+    pub save_path: Option<String>,
     #[serde(default)]
     pub mime: Option<String>,
     #[serde(default)]
@@ -82,6 +85,8 @@ pub struct CreateTaskCommand {
     pub headers: HashMap<String, String>,
     pub resources: Vec<CapturedResource>,
     pub filename: Option<String>,
+    #[serde(default)]
+    pub save_path: Option<String>,
     pub mime: Option<String>,
     pub size: Option<u64>,
     pub supports_range: Option<bool>,
@@ -100,6 +105,7 @@ impl CreateTaskCommand {
             headers: req.payload.headers,
             resources: req.payload.resources,
             filename: req.payload.filename,
+            save_path: req.payload.save_path,
             mime: req.payload.mime,
             size: req.payload.size,
             supports_range: req.payload.supports_range,
@@ -144,7 +150,7 @@ impl CreateTaskCommand {
             })
             .collect();
 
-        let canonical = serde_json::json!({
+        let mut canonical = serde_json::json!({
             "source": self.source,
             "title": self.title,
             "url": self.url,
@@ -162,6 +168,10 @@ impl CreateTaskCommand {
             })),
             "has_decrypted_cookies": self.decrypted_cookies.is_some(),
         });
+        // Keep fingerprints of older requests (without save_path) compatible.
+        if let Some(path) = &self.save_path {
+            canonical["save_path"] = serde_json::json!(path);
+        }
 
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         canonical.to_string().hash(&mut hasher);

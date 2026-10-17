@@ -289,6 +289,7 @@ async fn watched_roots(settings: &AppSettingsDto, task_service: &TaskService) ->
             let base = std::path::Path::new(&settings.categorized_root);
             push_unique_root(&mut roots, &mut seen, base.join("video"));
             push_unique_root(&mut roots, &mut seen, base.join("audio"));
+            push_unique_root(&mut roots, &mut seen, base.join("image"));
             push_unique_root(&mut roots, &mut seen, base.join("document"));
             push_unique_root(&mut roots, &mut seen, base.join("archive"));
             push_unique_root(&mut roots, &mut seen, base.join("program"));
@@ -318,10 +319,11 @@ async fn watched_roots(settings: &AppSettingsDto, task_service: &TaskService) ->
     roots
 }
 
-fn category_root_values(paths: &CategoryDownloadPaths) -> [&str; 6] {
+fn category_root_values(paths: &CategoryDownloadPaths) -> [&str; 7] {
     [
         paths.video.as_str(),
         paths.audio.as_str(),
+        paths.image.as_str(),
         paths.document.as_str(),
         paths.archive.as_str(),
         paths.program.as_str(),
@@ -655,6 +657,7 @@ mod tests {
         initial_settings.custom_paths = CategoryDownloadPaths {
             video: path.clone(),
             audio: path.clone(),
+            image: path.clone(),
             document: path.clone(),
             archive: path.clone(),
             program: path.clone(),
@@ -694,6 +697,7 @@ mod tests {
         initial_settings.custom_paths = CategoryDownloadPaths {
             video: configured.display().to_string(),
             audio: configured.display().to_string(),
+            image: configured.display().to_string(),
             document: configured.display().to_string(),
             archive: configured.display().to_string(),
             program: configured.display().to_string(),

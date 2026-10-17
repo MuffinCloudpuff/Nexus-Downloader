@@ -737,6 +737,25 @@ impl UniversalDownloader {
         insert_raw_range_headers(&mut probe_headers, 0, 0)?;
         let probe_res = self.client.get(url).headers(probe_headers).send().await?;
         let probe_status = probe_res.status();
+        // A server may legitimately ignore Range and return the entire file.
+        // Consume that response once rather than failing small image downloads
+        // or splitting a non-range response into duplicate chunks.
+        if probe_status == StatusCode::OK {
+            return self
+                .download_full_response(
+                    probe_res,
+                    output_path,
+                    task_id,
+                    task_service,
+                    resume_store,
+                    token,
+                    progress_start,
+                    progress_end,
+                    final_status,
+                    max_size,
+                )
+                .await;
+        }
         if probe_status != StatusCode::PARTIAL_CONTENT {
             tracing::warn!(
                 task_id,
@@ -1226,6 +1245,94 @@ impl UniversalDownloader {
             }
         }
 
+        Ok(())
+    }
+
+    async fn download_full_response(
+        &self,
+        mut response: reqwest::Response,
+        output_path: &Path,
+        task_id: &str,
+        task_service: Option<&crate::services::task_service::TaskService>,
+        resume_store: Arc<crate::core::resume::ResumeStore>,
+        token: tokio_util::sync::CancellationToken,
+        progress_start: f64,
+        progress_end: f64,
+        final_status: Option<TaskStatus>,
+        max_size: Option<u64>,
+    ) -> Result<()> {
+        let expected = response.content_length();
+        anyhow::ensure!(
+            !response.headers().contains_key(header::CONTENT_RANGE),
+            "HTTP 200 response unexpectedly contains a partial Content-Range"
+        );
+        anyhow::ensure!(
+            expected.is_none_or(|size| max_size.is_none_or(|limit| size <= limit)),
+            "download size exceeds allowed limit"
+        );
+        anyhow::ensure!(!token.is_cancelled(), "download cancelled");
+        // No range support means a restart, never append to a partial file.
+        resume_store.delete_manifest(task_id).await?;
+        if let Some(parent) = output_path.parent() {
+            tokio::fs::create_dir_all(parent).await?;
+        }
+        let mut file = File::create(output_path).await?;
+        let _active_connection = ActiveChunkConnectionGuard::enter();
+        let start = std::time::Instant::now();
+        let mut last_report = start;
+        let mut received = 0u64;
+        loop {
+            let chunk = tokio::select! {
+                biased;
+                _ = token.cancelled() => anyhow::bail!("download cancelled"),
+                chunk = response.chunk() => chunk?,
+            };
+            let Some(chunk) = chunk else {
+                break;
+            };
+            received = received
+                .checked_add(chunk.len() as u64)
+                .context("download size overflow")?;
+            anyhow::ensure!(
+                max_size.is_none_or(|limit| received <= limit),
+                "download size exceeds allowed limit"
+            );
+            file.write_all(&chunk).await?;
+            if last_report.elapsed().as_millis() >= 200 {
+                if let Some(service) = task_service {
+                    let progress = expected
+                        .filter(|size| *size > 0)
+                        .map_or(0.0, |size| received as f64 / size as f64);
+                    service
+                        .update_task_status(
+                            task_id,
+                            TaskStatus::Downloading,
+                            map_progress(progress_start, progress_end, progress),
+                            (received as f64 / start.elapsed().as_secs_f64().max(0.001)) as u64,
+                            received,
+                        )
+                        .await;
+                }
+                last_report = std::time::Instant::now();
+            }
+        }
+        anyhow::ensure!(
+            expected.is_none_or(|size| received == size),
+            "incomplete HTTP response body"
+        );
+        file.flush().await?;
+        file.sync_all().await?;
+        if let Some(service) = task_service {
+            service
+                .update_task_status(
+                    task_id,
+                    final_status.unwrap_or(TaskStatus::Downloading),
+                    progress_end.clamp(0.0, 1.0),
+                    0,
+                    received,
+                )
+                .await;
+        }
         Ok(())
     }
 

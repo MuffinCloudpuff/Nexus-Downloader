@@ -1,4 +1,4 @@
-export type OutputCategory = "video" | "audio" | "document" | "archive" | "program" | "other";
+export type OutputCategory = "video" | "audio" | "image" | "document" | "archive" | "program" | "other";
 export type ArtifactState = "unknown" | "available" | "missing" | "moved";
 export type TaskStatus =
   | "queued"
@@ -15,6 +15,7 @@ export type TaskStatus =
 export interface CategoryDownloadPaths {
   video: string;
   audio: string;
+  image: string;
   document: string;
   archive: string;
   program: string;
@@ -75,6 +76,7 @@ export interface CapturedResourcePayload {
 
 export interface CreateTaskPayload {
   url: string;
+  save_path?: string;
   headers?: Record<string, string>;
   resources?: CapturedResourcePayload[];
   encrypted_cookies?: string;

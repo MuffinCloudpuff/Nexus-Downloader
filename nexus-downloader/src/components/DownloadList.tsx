@@ -12,6 +12,7 @@ export function DownloadList() {
     all: t.categoryAll,
     video: t.categoryVideo,
     audio: t.categoryAudio,
+    image: t.categoryImage,
     document: t.categoryDocument,
     archive: t.categoryArchive,
     program: t.categoryProgram,

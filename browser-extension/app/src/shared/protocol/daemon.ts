@@ -50,6 +50,7 @@ export interface CreateTaskPayload {
   encrypted_cookies?: string;
   cookie_iv?: string;
   filename?: string;
+  save_path?: string;
   mime?: string;
   size?: number;
   supports_range?: boolean;
@@ -102,7 +103,7 @@ export interface TaskSummary {
   speed_bytes_per_sec: number;
   event_cursor: number;
   pack_name: string;
-  output_category?: "video" | "audio" | "document" | "archive" | "program" | "other";
+  output_category?: "video" | "audio" | "image" | "document" | "archive" | "program" | "other";
   output_path?: string;
   source?: string;
   artifact_state?: "unknown" | "available" | "missing" | "moved" | string;
@@ -189,7 +190,7 @@ export function normalizeTaskProgress(value: number): number {
 export function daemonTaskToGenericTask(task: TaskSummary, fallbackCreatedAt = Date.now()): GenericTaskSummary {
   const status = String(task.status || "queued");
   const title = task.title || task.task_id;
-  const fileExt = fileExtension(title);
+  const fileExt = fileExtension(task.output_path || title);
   return {
     taskId: task.task_id,
     requestId: task.request_id,

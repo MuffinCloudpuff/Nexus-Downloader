@@ -28,7 +28,8 @@ import {
     openActionPopup,
     queryTabs,
 } from "./background/chrome-helpers";
-import {onSendHeadersExtraInfoSpec, supportsDownloadDeterminingFilename,} from "./shared/browser";
+import {onSendHeadersExtraInfoSpec} from "./shared/browser";
+import {getBrowserDownload, isAbsoluteDownloadPath, listenForConfirmedDownloadTargets} from "./background/browser-download-target";
 import type {ClientTelemetryEvent, CreateTaskHttpReq} from "./shared/protocol/daemon";
 import {messageForDaemonError, messageFromUnknownError} from "./shared/protocol/error-messages";
 
@@ -575,6 +576,8 @@ async function interceptBrowserDownload(
     return;
   }
 
+  if (downloadItem.state !== "in_progress" || !isAbsoluteDownloadPath(downloadItem.filename)) return;
+
   if (!daemonClient.isReady()) {
     if (daemonClient.hasToken()) {
       try {
@@ -618,6 +621,12 @@ async function interceptBrowserDownload(
   });
 
   try {
+    // Older daemons silently ignore unknown fields: leave the browser in
+    // charge unless the backend explicitly supports exact destinations.
+    if (!await daemonClient.supportsBrowserSavePath()) return;
+    const latest = await getBrowserDownload(downloadItem.id);
+    if (latest?.state !== "in_progress" || !isAbsoluteDownloadPath(latest.filename)) return;
+    downloadItem = latest;
     await cancelDownload(downloadItem.id);
     if (options.eraseFromHistory) {
       await eraseDownloadFromHistory(downloadItem.id);
@@ -658,16 +667,7 @@ function reply(sendResponse: (response?: unknown) => void, response: Promise<unk
   return true;
 }
 
-if (supportsDownloadDeterminingFilename()) {
-  chrome.downloads.onDeterminingFilename.addListener((downloadItem, suggest) => {
-    suggest();
-    void interceptBrowserDownload(downloadItem);
-  });
-} else if (chrome.downloads.onCreated?.addListener) {
-  chrome.downloads.onCreated.addListener((downloadItem) => {
-    void interceptBrowserDownload(downloadItem, { eraseFromHistory: true });
-  });
-}
+listenForConfirmedDownloadTargets(interceptBrowserDownload);
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (!message || typeof message !== "object") {

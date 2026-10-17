@@ -23,10 +23,13 @@ function normalizeStatus(status: string): DownloadStatus {
 }
 
 function taskTypeOf(task: TaskSummary): TaskType {
-  if (task.output_category) {
+  if (task.output_category && task.output_category !== "other") {
     return task.output_category;
   }
   const ext = fileExtension(task.output_path || task.title);
+  if (["jpg", "jpeg", "jfif", "png", "gif", "webp", "avif", "bmp", "svg", "tif", "tiff", "ico", "heic", "heif", "jxl"].includes(ext)) {
+    return "image";
+  }
   if ([
     "mp4", "mkv", "webm", "mov", "avi", "flv", "m4v", "m3u8", "mpd", "wmv",
     "mpg", "mpeg", "3gp", "ogv", "vob", "mts", "m2ts", "h264", "h265", "hevc",
@@ -59,6 +62,7 @@ function taskTypeOf(task: TaskSummary): TaskType {
 }
 
 function platformOf(task: TaskSummary): DownloadTask["platform"] {
+  if (taskTypeOf(task) === "image") return "other";
   const haystack = `${task.pack_name} ${task.source || ""} ${task.title} ${task.output_path || ""}`.toLowerCase();
   if (haystack.includes("bilibili") || task.title.startsWith("B-")) {
     return "bilibili";
@@ -182,8 +186,6 @@ export function applyTaskEvent(task: DownloadTask, event: TaskEvent): DownloadTa
     case "task_parsing_started":
     case "task_queued":
       return { ...task, status: "downloading", progress: normalizeProgress(task.progress) };
-    case "task_canceled":
-      return { ...task, status: "error", speed: 0 };
     default:
       return task;
   }

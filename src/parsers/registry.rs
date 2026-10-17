@@ -35,6 +35,20 @@ impl ParserRegistry {
     }
 
     pub async fn resolve(&self, task_id: &str, cmd: &CreateTaskCommand) -> Result<ExecutionPlan> {
+        // A browser-confirmed Save As is an exact file transfer, not a request
+        // to extract media from its referring webpage. In particular, a JPG
+        // saved from a Bilibili video page must never turn into a video task.
+        if cmd.source.as_deref() == Some("download") && cmd.save_path.is_some() {
+            let resolution = super::interfaces::SiteResolution {
+                url: cmd.url.clone(),
+                title: cmd.title.clone(),
+                headers: cmd.effective_download_headers(),
+                resources: vec![],
+            };
+            return super::protocol::http_file::HttpFileProtocolParser
+                .parse(task_id, &resolution)
+                .await;
+        }
         let mut resolution = None;
         for site in &self.site_parsers {
             if site.matches(cmd) {
@@ -200,6 +214,7 @@ mod tests {
             headers: Default::default(),
             resources: vec![],
             filename: None,
+            save_path: None,
             mime: None,
             size: None,
             supports_range: None,
@@ -229,6 +244,7 @@ mod tests {
             headers: Default::default(),
             resources: vec![],
             filename: None,
+            save_path: None,
             mime: None,
             size: None,
             supports_range: None,

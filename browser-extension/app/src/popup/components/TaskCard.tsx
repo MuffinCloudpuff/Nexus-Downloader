@@ -20,6 +20,9 @@ import {
 } from "../../shared/utils";
 import {taskStatusToBadgeColor, taskStatusToBadgeIcon} from "../lib/fluent";
 import {visualIcon} from "../lib/presenters";
+import {useEffect, useState} from "react";
+import {DEFAULT_DAEMON_HTTP_BASE_URL} from "../../shared/constants";
+import {fileExtension} from "../../shared/utils";
 
 const useStyles = makeStyles({
   root: {
@@ -112,6 +115,7 @@ type PlatformIcon = {
 };
 
 function platformIconForTask(task: GenericTaskSummary): PlatformIcon | null {
+  if (task.outputCategory === "image" || taskVisual(task).kind === "image") return null;
   const title = task.title.trim();
   const haystack = [task.title, task.packName, task.outputPath ?? ""].join(" ").toLowerCase();
 
@@ -148,6 +152,12 @@ export function TaskCard({
   const visual = taskVisual(task);
   const TaskIcon = visualIcon(visual.kind);
   const platformIcon = platformIconForTask(task);
+  const extension = fileExtension(task.outputPath || task.title) || task.fileExt;
+  const shellIconUrl = !platformIcon && extension
+    ? `${DEFAULT_DAEMON_HTTP_BASE_URL}/api/system-icon?ext=${encodeURIComponent(extension)}&v=2`
+    : null;
+  const [shellIconFailed, setShellIconFailed] = useState(false);
+  useEffect(() => setShellIconFailed(false), [shellIconUrl]);
   const isMissing = task.artifactState === "missing";
   const badgeStatus = isMissing ? "missing" : task.status;
   const StatusIcon = taskStatusToBadgeIcon(badgeStatus);
@@ -174,6 +184,11 @@ export function TaskCard({
               className={styles.platformIconImage}
               src={platformIcon.src}
             />
+          </div>
+        ) : shellIconUrl && !shellIconFailed ? (
+          <div className={styles.platformIcon}>
+            <img alt={visual.kind === "image" ? "图片" : "文件类型"} src={shellIconUrl}
+              className={styles.platformIconImage} onError={() => setShellIconFailed(true)} />
           </div>
         ) : (
           <Avatar
@@ -212,6 +227,7 @@ export function TaskCard({
             <div className={styles.metrics}>
               <Caption1>{formatTaskProgressPercent(task)}</Caption1>
               <Caption1>{metric}</Caption1>
+              {visual.kind === "image" ? <Caption1>图片</Caption1> : null}
             </div>
 
             <div className={styles.actions}>

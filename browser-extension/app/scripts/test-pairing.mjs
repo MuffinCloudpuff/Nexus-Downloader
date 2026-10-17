@@ -74,3 +74,15 @@ expire();
 await assert.rejects(pending, /自动配对超时/);
 assert.equal(stalled.buildSnapshot().connectionState, "disconnected");
 console.log("pairing tests passed: first connection, concurrent pairing, native error, timeout");
+
+// A new extension must never cancel a browser download for an older daemon
+// that would silently discard the selected save_path.
+self.setTimeout = setTimeout;
+self.clearTimeout = clearTimeout;
+globalThis.fetch = async () => Response.json({browser_download_save_path: true});
+assert.equal(await fresh.supportsBrowserSavePath(), true);
+globalThis.fetch = async () => new Response("Not Found", {status: 404});
+assert.equal(await fresh.supportsBrowserSavePath(), false);
+globalThis.fetch = async () => Response.json({});
+assert.equal(await fresh.supportsBrowserSavePath(), false);
+console.log("daemon save-path capability compatibility tests passed");

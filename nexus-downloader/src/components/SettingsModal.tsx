@@ -207,12 +207,13 @@ export function SettingsModal() {
                 </div>
 
                 <div className="grid grid-cols-2 gap-4">
-                  {(['video', 'audio', 'document', 'archive', 'program', 'other'] as const).map(cat => (
+                  {(['video', 'audio', 'image', 'document', 'archive', 'program', 'other'] as const).map(cat => (
                     <div key={cat} className="flex flex-col gap-1.5 opacity-50">
                       <span className="text-[10px] uppercase font-bold text-white/80">
                         {t[{
                           video: 'categoryVideo',
                           audio: 'categoryAudio',
+                          image: 'categoryImage',
                           document: 'categoryDocument',
                           archive: 'categoryArchive',
                           program: 'categoryProgram',
@@ -238,10 +239,11 @@ export function SettingsModal() {
                   {settings.directoryMode === 'system_default' && <span className="ml-2 font-normal text-white/50">{t.readOnlyPath}</span>}
                 </label>
                 <div className="grid grid-cols-2 gap-4">
-                  {(['video', 'audio', 'document', 'archive', 'program', 'other'] as const).map(cat => {
+                  {(['video', 'audio', 'image', 'document', 'archive', 'program', 'other'] as const).map(cat => {
                     const i18nKey = {
                       video: 'categoryVideo',
                       audio: 'categoryAudio',
+                      image: 'categoryImage',
                       document: 'categoryDocument',
                       archive: 'categoryArchive',
                       program: 'categoryProgram',

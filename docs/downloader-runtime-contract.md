@@ -1,6 +1,17 @@
 # Downloader Runtime Contract
 
-更新时间：2026-06-08
+更新时间：2026-10-17
+
+## 浏览器另存为与图片
+
+- 扩展在 `downloads.onChanged` 给出最终绝对 `filename` 后才考虑接管；`onDeterminingFilename` 仅调用 `suggest()`，不能在保存对话框确认前取消下载。
+- 已完成、已中断、用户取消保存、路径不明确或后端不支持新规则时，保留浏览器下载，不创建替代任务。
+- 接管前通过鉴权接口 `GET /api/capabilities` 确认 `browser_download_save_path: true`，避免旧后端忽略新字段。
+- `source: "download"` 的 `payload.save_path` 为浏览器确认的完整绝对路径，优先于全部目录模式；路径非法返回错误，不能悄悄改存默认目录。该字段参与幂等性指纹。
+- 这类任务按原始 HTTP 文件传输，不根据来源网页触发视频提取或转码。视频旁的下载按钮仍走原有媒体解析流程。
+- 图片 MIME 或 JPG/PNG/WebP/AVIF 等后缀归类为 `image`；新分类贯通后端、React 侧栏、目录设置与扩展展示。旧 `other` 图片记录只修正分类，不移动或重命名文件。
+- React 与扩展任务卡复用 Windows 文件关联图标；无法获取时回退为图片/文件分类图标。
+- HTTP 服务器忽略 Range 并返回 200 时，使用单连接流式完整下载；保留取消、文件大小上限与长度校验。无 Range 的任务重新开始传输，不宣称字节级续传。
 
 ## 控制命令语义
 

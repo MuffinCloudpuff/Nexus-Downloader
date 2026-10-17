@@ -10,6 +10,7 @@
     "test:popup": "node ./scripts/test-popup.mjs",
     "test:icons": "node ./scripts/test-brand-icons.mjs",
     "test:branding": "node ./scripts/test-branding.mjs",
+    "test:downloads": "node ./scripts/test-download-target.mjs",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

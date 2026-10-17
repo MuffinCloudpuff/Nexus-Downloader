@@ -107,6 +107,7 @@ mod tests {
             client_context: None,
             decrypted_cookies: decrypted_cookies.map(str::to_string),
             filename: None,
+            save_path: None,
             mime: None,
             size: None,
             supports_range: None,

@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 pub enum OutputCategory {
     Video,
     Audio,
+    Image,
     Document,
     Archive,
     Program,
@@ -18,6 +19,7 @@ impl OutputCategory {
         match self {
             OutputCategory::Video => "video",
             OutputCategory::Audio => "audio",
+            OutputCategory::Image => "image",
             OutputCategory::Document => "document",
             OutputCategory::Archive => "archive",
             OutputCategory::Program => "program",
@@ -122,6 +124,8 @@ fn classify_mime(mime: &str) -> Option<OutputCategory> {
         Some(OutputCategory::Video)
     } else if lower.starts_with("audio/") {
         Some(OutputCategory::Audio)
+    } else if lower.starts_with("image/") {
+        Some(OutputCategory::Image)
     } else if lower.contains("javascript")
         || lower.contains("typescript")
         || lower.contains("python")
@@ -168,6 +172,8 @@ fn classify_extension(ext: &str) -> Option<OutputCategory> {
             Some(OutputCategory::Video)
         }
         "mp3" | "flac" | "wav" | "m4a" | "aac" | "ogg" | "opus" => Some(OutputCategory::Audio),
+        "jpg" | "jpeg" | "jfif" | "png" | "gif" | "webp" | "avif" | "bmp" | "svg" | "tif"
+        | "tiff" | "ico" | "heic" | "heif" | "jxl" => Some(OutputCategory::Image),
         "pdf" | "doc" | "docx" | "xls" | "xlsx" | "ppt" | "pptx" | "txt" | "md" | "csv"
         | "json" | "xml" => Some(OutputCategory::Document),
         "zip" | "7z" | "rar" | "tar" | "gz" | "bz2" | "xz" => Some(OutputCategory::Archive),
@@ -182,6 +188,14 @@ fn classify_extension(ext: &str) -> Option<OutputCategory> {
         | "gradle" => Some(OutputCategory::Program),
         _ => None,
     }
+}
+
+pub fn is_image_path(path: &str) -> bool {
+    let mut extensions = Vec::new();
+    push_extension(&mut extensions, Some(path));
+    extensions
+        .iter()
+        .any(|ext| classify_extension(ext) == Some(OutputCategory::Image))
 }
 
 #[cfg(test)]
@@ -203,6 +217,7 @@ mod tests {
             client_context: None,
             decrypted_cookies: None,
             filename: filename.map(str::to_string),
+            save_path: None,
             mime: mime.map(str::to_string),
             size: None,
             supports_range: None,
@@ -248,6 +263,43 @@ mod tests {
                 &plan(ExecutionKind::HttpFile)
             ),
             OutputCategory::Video
+        );
+    }
+
+    #[test]
+    fn classifies_images_by_mime_or_extension() {
+        for ext in [
+            "jpg", "JPEG", "jfif", "png", "webp", "avif", "gif", "svg", "heic", "tiff", "ico",
+            "jxl",
+        ] {
+            assert_eq!(
+                classify_output(
+                    &command(Some(&format!("photo.{ext}")), None),
+                    &plan(ExecutionKind::HttpFile)
+                ),
+                OutputCategory::Image
+            );
+        }
+        assert_eq!(
+            classify_output(
+                &command(Some("download"), Some("image/jpeg; charset=binary")),
+                &plan(ExecutionKind::HttpFile)
+            ),
+            OutputCategory::Image
+        );
+        assert_eq!(
+            classify_output(
+                &command(Some("photo.svg"), Some("image/svg+xml")),
+                &plan(ExecutionKind::HttpFile)
+            ),
+            OutputCategory::Image
+        );
+        assert_eq!(
+            classify_output(
+                &command(Some("file.zip"), None),
+                &plan(ExecutionKind::HttpFile)
+            ),
+            OutputCategory::Archive
         );
     }
 

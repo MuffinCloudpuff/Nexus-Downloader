@@ -611,6 +611,14 @@ impl TaskService {
                         continue;
                     }
                     rebuild_task_snapshot_from_events(&mut task);
+                    // Old versions recorded images as Other. Repair only the
+                    // category; never move/rename historical downloaded files.
+                    use crate::parsers::policy::output_category::{OutputCategory, is_image_path};
+                    if matches!(task.output_category, None | Some(OutputCategory::Other))
+                        && is_image_path(&task.path)
+                    {
+                        task.output_category = Some(OutputCategory::Image);
+                    }
                     tasks.insert(task.id.clone(), task);
                 }
                 Err(error) => {
@@ -695,6 +703,23 @@ mod tests {
         let unchanged = service.get_task("task-reduce").await.unwrap();
         assert_eq!(unchanged.progress, 0.25);
         assert_eq!(unchanged.received_bytes, 2048);
+    }
+
+    #[test]
+    fn old_image_records_are_reclassified_without_changing_paths() {
+        use crate::parsers::policy::output_category::OutputCategory;
+        let root = temp_data_dir("legacy-image");
+        let mut photo = test_task("photo");
+        photo.path = "E:/selected/原图.jpg".into();
+        photo.output_category = Some(OutputCategory::Other);
+        std::fs::write(
+            Path::new(&root).join("Memory.log"),
+            serde_json::to_string(&photo).unwrap(),
+        )
+        .unwrap();
+        let loaded = TaskService::load_from_disk(&root);
+        assert_eq!(loaded["photo"].output_category, Some(OutputCategory::Image));
+        assert_eq!(loaded["photo"].path, photo.path);
     }
 
     #[tokio::test]

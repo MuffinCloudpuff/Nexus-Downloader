@@ -3,9 +3,11 @@ use serde::{Deserialize, Serialize};
 use super::errors::TaskError;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
 pub struct CategoryDownloadPaths {
     pub video: String,
     pub audio: String,
+    pub image: String,
     pub document: String,
     pub archive: String,
     pub program: String,
@@ -17,6 +19,7 @@ impl Default for CategoryDownloadPaths {
         Self {
             video: "./downloads/video".to_string(),
             audio: "./downloads/audio".to_string(),
+            image: "./downloads/image".to_string(),
             document: "./downloads/document".to_string(),
             archive: "./downloads/archive".to_string(),
             program: "./downloads/program".to_string(),
@@ -91,6 +94,7 @@ pub struct PatchAppSettingsDto {
 pub struct PatchCategoryDownloadPaths {
     pub video: Option<String>,
     pub audio: Option<String>,
+    pub image: Option<String>,
     pub document: Option<String>,
     pub archive: Option<String>,
     pub program: Option<String>,

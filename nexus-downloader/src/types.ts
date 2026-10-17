@@ -1,5 +1,5 @@
 export type DownloadStatus = 'downloading' | 'resuming' | 'paused' | 'completed' | 'error' | 'waiting';
-export type TaskType = 'video' | 'audio' | 'document' | 'archive' | 'program' | 'other';
+export type TaskType = 'video' | 'audio' | 'image' | 'document' | 'archive' | 'program' | 'other';
 export type ArtifactState = 'unknown' | 'available' | 'missing' | 'moved';
 
 export interface DownloadTask {

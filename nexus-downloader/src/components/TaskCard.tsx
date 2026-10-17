@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { FileArchive, FileVideo, FileText, File, Music, Terminal, Play, Pause, RotateCcw, X } from "lucide-react";
+import { FileArchive, FileVideo, FileText, File, Music, Terminal, Play, Pause, RotateCcw, X, Image } from "lucide-react";
 import { motion } from "motion/react";
 import { DownloadTask } from "../types";
 import { cn } from "../lib/utils";
@@ -123,6 +123,7 @@ export const getPlatformConfig = (
   } else {
     switch (task.type) {
       case "video": icon = <FileVideo className="w-6 h-6" />; break;
+      case "image": icon = <Image className="w-6 h-6" />; bg = "bg-emerald-600/10"; color = "text-emerald-600 dark:text-emerald-400"; break;
       case "archive": icon = <FileArchive className="w-6 h-6" />; bg = "bg-yellow-600/10"; color = "text-yellow-600 dark:text-yellow-400"; break;
       case "document": icon = <FileText className="w-6 h-6" />; break;
       case "audio": icon = <Music className="w-6 h-6" />; bg = "bg-purple-600/10"; color = "text-purple-600 dark:text-purple-400"; break;
@@ -178,6 +179,7 @@ export function TaskCard({ task }: { task: DownloadTask }) {
     switch (task.type) {
       case "video": return t.categoryVideo;
       case "audio": return t.categoryAudio;
+      case "image": return t.categoryImage;
       case "document": return t.categoryDocument;
       case "archive": return t.categoryArchive;
       case "program": return t.categoryProgram;

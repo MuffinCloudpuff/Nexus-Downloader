@@ -30,6 +30,7 @@ mod tests {
                 ..Default::default()
             }],
             filename: Some("video.mp4".to_string()),
+            save_path: None,
             mime: Some("video/mp4".to_string()),
             size: None,
             supports_range: None,
@@ -72,6 +73,7 @@ mod tests {
                 encrypted_cookies: None,
                 cookie_iv: None,
                 filename: None,
+                save_path: None,
                 mime: None,
                 size: None,
                 supports_range: None,
@@ -103,6 +105,33 @@ mod tests {
         assert_eq!(resuming_json, "\"resuming\"");
         let decoded_resuming: TaskStatus = serde_json::from_str(&resuming_json).unwrap();
         assert_eq!(decoded_resuming, TaskStatus::Resuming);
+    }
+
+    #[test]
+    fn browser_destination_survives_protocol_and_affects_idempotency() {
+        let req: CreateTaskHttpReq = serde_json::from_value(serde_json::json!({
+            "request_id": "browser", "source": "download", "title": "photo.jpg",
+            "payload": { "url": "https://example.com/photo", "filename": "photo.jpg",
+                "mime": "image/jpeg", "save_path": "D:/我的图片/photo.jpg" }
+        }))
+        .unwrap();
+        let mut cmd = CreateTaskCommand::from_http(req, None);
+        assert_eq!(cmd.save_path.as_deref(), Some("D:/我的图片/photo.jpg"));
+        let fingerprint = cmd.compute_payload_fingerprint();
+        cmd.save_path = Some("E:/photo.jpg".into());
+        assert_ne!(fingerprint, cmd.compute_payload_fingerprint());
+    }
+
+    #[test]
+    fn old_settings_keep_custom_paths_when_image_category_is_added() {
+        let settings: super::settings::AppSettingsDto = serde_json::from_value(serde_json::json!({
+            "custom_paths": {"video":"D:/vid", "audio":"D:/aud", "document":"D:/doc",
+                "archive":"E:/zip", "program":"E:/exe", "other":"D:/rest"}
+        }))
+        .unwrap();
+        assert_eq!(settings.custom_paths.archive, "E:/zip");
+        assert_eq!(settings.custom_paths.video, "D:/vid");
+        assert_eq!(settings.custom_paths.image, "./downloads/image");
     }
 
     #[test]

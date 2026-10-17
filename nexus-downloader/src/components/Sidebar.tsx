@@ -1,5 +1,5 @@
 import { motion } from "motion/react";
-import { Download, CheckCircle2, Clock, Trash2, Settings, HardDriveDownload, UserCircle, Tv, Film, Music, FileText, FileArchive, Terminal, File } from "lucide-react";
+import { Download, CheckCircle2, Clock, Trash2, Settings, HardDriveDownload, UserCircle, Tv, Film, Music, FileText, FileArchive, Terminal, File, Image } from "lucide-react";
 import { useApp } from "../store";
 import { cn } from "../lib/utils";
 import { GlobalSpeed } from "./GlobalSpeed";
@@ -12,6 +12,7 @@ export function Sidebar() {
     { id: 'all', icon: HardDriveDownload, label: t.categoryAll },
     { id: 'video', icon: Film, label: t.categoryVideo },
     { id: 'audio', icon: Music, label: t.categoryAudio },
+    { id: 'image', icon: Image, label: t.categoryImage },
     { id: 'document', icon: FileText, label: t.categoryDocument },
     { id: 'archive', icon: FileArchive, label: t.categoryArchive },
     { id: 'program', icon: Terminal, label: t.categoryProgram },

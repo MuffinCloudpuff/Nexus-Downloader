@@ -884,6 +884,7 @@ pub fn create_router(
     };
 
     Router::new()
+        .route("/api/capabilities", get(get_capabilities))
         .route("/api/tasks", post(create_task).get(get_tasks))
         .route("/api/settings", get(get_settings).patch(patch_settings))
         .route("/api/runtime/metrics", get(get_runtime_metrics))
@@ -910,6 +911,10 @@ pub fn create_router(
         .route("/api/system-icon", get(get_system_icon))
         .layer(cors)
         .with_state(state)
+}
+
+async fn get_capabilities(_auth: AuthToken) -> Json<Value> {
+    Json(json!({"browser_download_save_path": true}))
 }
 
 fn is_allowed_cors_origin(origin: &HeaderValue) -> bool {
@@ -1033,6 +1038,26 @@ mod tests {
         assert_eq!(pairing["pairing_issued"], true);
         let token = pairing["token"].as_str().unwrap();
         assert!(token.starts_with("gd3_"));
+
+        assert_eq!(
+            client
+                .get(format!("{base_url}/api/capabilities"))
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            reqwest::StatusCode::UNAUTHORIZED
+        );
+        let capabilities: Value = client
+            .get(format!("{base_url}/api/capabilities"))
+            .bearer_auth(token)
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(capabilities["browser_download_save_path"], true);
 
         let create_body = json!({
             "request_id": "req-http-api-idempotent",
