@@ -609,7 +609,7 @@ dependencies = [
 
 [[package]]
 name = "gd3-daemon"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "aes-gcm",
  "anyhow",

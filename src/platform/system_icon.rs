@@ -1,28 +1,92 @@
 #[cfg(windows)]
 pub fn file_type_icon_png(ext: &str) -> Result<Vec<u8>, String> {
-    use windows::Win32::UI::WindowsAndMessaging as wam;
+    file_icon_png(None, ext)
+}
 
-    let sanitized = ext.trim().trim_start_matches('.');
-    if sanitized.is_empty() {
-        return Err("empty file extension".into());
-    }
-
-    let hicon = match default_icon_location(sanitized)
-        .and_then(|location| extract_default_icon(&location))
+/// Shared by the local HTTP type-icon route and the trusted desktop IPC command.
+#[cfg(windows)]
+pub fn file_icon_png(path: Option<&str>, ext: &str) -> Result<Vec<u8>, String> {
+    let _com = ComApartment::new();
+    let ext = ext.trim().trim_start_matches('.').to_lowercase();
+    if ext.len() > 32
+        || !ext
+            .chars()
+            .all(|c| c.is_alphanumeric() || c == '_' || c == '-')
     {
-        Ok(icon) => icon,
-        Err(_) => extract_associated_icon(sanitized)?,
-    };
-
-    if hicon.0.is_null() {
-        return Err(format!("null HICON for extension '{ext}'"));
+        return Err("invalid file extension".into());
     }
+    let existing = path.filter(|p| std::path::Path::new(p).is_file());
+    // The real path also respects per-file icon handlers (EXE/ICO/LNK and others).
+    if let Some(path) = existing {
+        if let Ok(icon) = extract_shell_icon(path, false) {
+            return consume_icon(icon);
+        }
+    }
+    if let Ok(location) = default_icon_location(&ext) {
+        // Store applications register an indirect PNG resource rather than an EXE/DLL.
+        if location.path.starts_with('@') {
+            if let Ok(bytes) = indirect_icon_png(&location.path) {
+                return Ok(bytes);
+            }
+        } else if !location.path.contains("%1") {
+            if let Ok(icon) = extract_default_icon(&location) {
+                return consume_icon(icon);
+            }
+        }
+    }
+    let name = if ext.is_empty() {
+        "file".into()
+    } else {
+        format!("file.{ext}")
+    };
+    consume_icon(extract_shell_icon(&name, true)?)
+}
 
+#[cfg(windows)]
+fn consume_icon(hicon: windows::Win32::UI::WindowsAndMessaging::HICON) -> Result<Vec<u8>, String> {
     let result = hicon_to_png(hicon);
     unsafe {
-        let _ = wam::DestroyIcon(hicon);
+        let _ = windows::Win32::UI::WindowsAndMessaging::DestroyIcon(hicon);
     }
     result
+}
+
+#[cfg(windows)]
+struct ComApartment(bool);
+
+#[cfg(windows)]
+impl ComApartment {
+    fn new() -> Self {
+        use windows::Win32::System::Com::{COINIT_APARTMENTTHREADED, CoInitializeEx};
+        Self(unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) }.is_ok())
+    }
+}
+
+#[cfg(windows)]
+impl Drop for ComApartment {
+    fn drop(&mut self) {
+        if self.0 {
+            unsafe { windows::Win32::System::Com::CoUninitialize() };
+        }
+    }
+}
+
+#[cfg(windows)]
+fn indirect_icon_png(resource: &str) -> Result<Vec<u8>, String> {
+    use windows::{Win32::UI::Shell::SHLoadIndirectString, core::PCWSTR};
+    let wide: Vec<u16> = resource.encode_utf16().chain(Some(0)).collect();
+    let mut output = vec![0u16; 32768];
+    unsafe { SHLoadIndirectString(PCWSTR(wide.as_ptr()), &mut output, None) }
+        .map_err(|e| format!("indirect icon resource: {e}"))?;
+    let end = output.iter().position(|c| *c == 0).unwrap_or(output.len());
+    let path = String::from_utf16_lossy(&output[..end]);
+    let bytes = std::fs::read(path).map_err(|e| format!("icon asset: {e}"))?;
+    let image = image::load_from_memory(&bytes).map_err(|e| format!("icon image: {e}"))?;
+    let mut png = Vec::new();
+    image
+        .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+        .map_err(|e| e.to_string())?;
+    Ok(png)
 }
 
 #[cfg(windows)]
@@ -137,55 +201,45 @@ fn extract_default_icon(
 }
 
 #[cfg(windows)]
-fn extract_associated_icon(
-    ext: &str,
+fn extract_shell_icon(
+    path: &str,
+    use_attributes: bool,
 ) -> Result<windows::Win32::UI::WindowsAndMessaging::HICON, String> {
     use std::os::windows::ffi::OsStrExt;
     use windows::Win32::UI::Shell;
 
-    let file_path = temporary_probe_file(ext)?;
-    let wide_path: Vec<u16> = file_path
-        .as_os_str()
+    let wide_path: Vec<u16> = std::ffi::OsStr::new(path)
         .encode_wide()
         .chain(std::iter::once(0))
         .collect();
-    let mut icon_path = [0u16; 128];
-    if wide_path.len() > icon_path.len() {
-        let _ = std::fs::remove_file(&file_path);
-        return Err(format!(
-            "icon probe path is too long for ExtractAssociatedIconW: {}",
-            file_path.display()
-        ));
+    let mut info = Shell::SHFILEINFOW::default();
+    let mut flags = Shell::SHGFI_ICON;
+    if use_attributes {
+        flags |= Shell::SHGFI_USEFILEATTRIBUTES;
     }
-    icon_path[..wide_path.len()].copy_from_slice(&wide_path);
-
-    let mut icon_index = 0u16;
-    let hicon = unsafe { Shell::ExtractAssociatedIconW(None, &mut icon_path, &mut icon_index) };
-    let _ = std::fs::remove_file(&file_path);
-    if hicon.0.is_null() {
-        return Err(format!(
-            "ExtractAssociatedIconW returned null HICON for '.{ext}'"
-        ));
+    let result = unsafe {
+        Shell::SHGetFileInfoW(
+            windows::core::PCWSTR(wide_path.as_ptr()),
+            windows::Win32::Storage::FileSystem::FILE_ATTRIBUTE_NORMAL,
+            Some(&mut info),
+            std::mem::size_of::<Shell::SHFILEINFOW>() as u32,
+            flags,
+        )
+    };
+    if result == 0 || info.hIcon.0.is_null() {
+        return Err("Windows shell icon unavailable".into());
     }
-    Ok(hicon)
-}
-
-#[cfg(windows)]
-fn temporary_probe_file(ext: &str) -> Result<std::path::PathBuf, String> {
-    let dir = std::env::temp_dir().join("gd3-system-icons");
-    std::fs::create_dir_all(&dir)
-        .map_err(|error| format!("failed to create icon temp dir: {error}"))?;
-    let file_path = dir.join(format!("probe.{ext}"));
-    if !file_path.exists() {
-        std::fs::write(&file_path, [])
-            .map_err(|error| format!("failed to create icon probe file: {error}"))?;
-    }
-    Ok(file_path)
+    Ok(info.hIcon)
 }
 
 #[cfg(not(windows))]
 pub fn file_type_icon_png(ext: &str) -> Result<Vec<u8>, String> {
-    let _ = ext;
+    file_icon_png(None, ext)
+}
+
+#[cfg(not(windows))]
+pub fn file_icon_png(path: Option<&str>, ext: &str) -> Result<Vec<u8>, String> {
+    let _ = (path, ext);
     Err("system file-type icons are only available on Windows".into())
 }
 
@@ -306,4 +360,62 @@ fn hicon_to_png(hicon: windows::Win32::UI::WindowsAndMessaging::HICON) -> Result
     }
 
     result
+}
+
+#[cfg(all(test, windows))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn store_application_icons_resolve_to_the_registered_asset() {
+        let _com = ComApartment::new();
+        for ext in ["zip", "jpg", "png"] {
+            if let Ok(location) = default_icon_location(ext) {
+                if location.path.starts_with('@') {
+                    let expected = indirect_icon_png(&location.path)
+                        .expect("registered Store icon must resolve");
+                    assert_eq!(
+                        file_type_icon_png(ext).unwrap(),
+                        expected,
+                        "{ext} must not silently become a blank document icon"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn shell_icons_cover_unknown_extensionless_and_actual_executables() {
+        for ext in ["", "nexus_unknown", "7z", "rar", "pdf"] {
+            let bytes = file_type_icon_png(ext).unwrap();
+            let image = image::load_from_memory(&bytes).unwrap().to_rgba8();
+            assert!(image.pixels().any(|pixel| pixel.0[3] > 0), "{ext}");
+        }
+        for ext in ["../zip", "zip\\file", "zip\0", &"x".repeat(33)] {
+            assert!(file_type_icon_png(ext).is_err());
+        }
+        if let Ok(path) = std::env::var("NEXUS_ICON_TEST_FILE") {
+            let actual = file_icon_png(Some(&path), "exe").unwrap();
+            assert_ne!(
+                actual,
+                file_type_icon_png("exe").unwrap(),
+                "an application must use its own icon"
+            );
+        }
+    }
+
+    #[test]
+    fn export_icons_when_explicitly_requested() {
+        let Ok(dir) = std::env::var("NEXUS_ICON_TEST_OUTPUT") else {
+            return;
+        };
+        std::fs::create_dir_all(&dir).unwrap();
+        for ext in ["zip", "7z", "rar", "jpg", "pdf"] {
+            std::fs::write(
+                std::path::Path::new(&dir).join(format!("{ext}.png")),
+                file_type_icon_png(ext).unwrap(),
+            )
+            .unwrap();
+        }
+    }
 }

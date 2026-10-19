@@ -33,7 +33,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             gd3_get_autostart_enabled,
             gd3_set_autostart_enabled,
-            icon::get_type_icon
+            icon::get_type_icon,
+            icon::get_file_icon
         ])
         .on_window_event(|window, event| {
             if let WindowEvent::CloseRequested { api, .. } = event {

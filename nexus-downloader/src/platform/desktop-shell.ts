@@ -5,8 +5,15 @@ type TauriWindow = Window &
   };
 
 function isTauriRuntime(): boolean {
+  if (typeof window === "undefined") return false;
   const currentWindow = window as TauriWindow;
   return Boolean(currentWindow.__TAURI_INTERNALS__ || currentWindow.__TAURI__);
+}
+
+export async function getWindowsFileIcon(path: string | undefined, ext: string): Promise<string | null> {
+  if (!isTauriRuntime()) return null;
+  const { invoke } = await import("@tauri-apps/api/core");
+  return invoke<string>("get_file_icon", { path: path || null, ext });
 }
 
 export async function revealPathInDesktop(path?: string): Promise<boolean> {

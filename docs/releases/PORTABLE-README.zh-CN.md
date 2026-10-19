@@ -1,4 +1,4 @@
-# Nexus Downloader 0.1.0 — Windows x64 便携版
+# Nexus Downloader 0.1.1 — Windows x64 便携版
 
 1. 将整个文件夹解压到可写目录，例如 `D:\Apps\NexusDownloader`，不要直接在压缩包内运行。
 2. 如有旧版正在运行，请先从托盘菜单退出旧版，再运行 `Nexus Downloader.exe`。

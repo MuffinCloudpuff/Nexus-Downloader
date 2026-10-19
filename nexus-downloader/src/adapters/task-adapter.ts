@@ -62,15 +62,17 @@ function taskTypeOf(task: TaskSummary): TaskType {
 }
 
 function platformOf(task: TaskSummary): DownloadTask["platform"] {
-  if (taskTypeOf(task) === "image") return "other";
-  const haystack = `${task.pack_name} ${task.source || ""} ${task.title} ${task.output_path || ""}`.toLowerCase();
-  if (haystack.includes("bilibili") || task.title.startsWith("B-")) {
+  if (taskTypeOf(task) !== "video") return "other";
+  // Platform identity belongs to the downloader/source, never a directory name.
+  const identity = `${task.pack_name || ""} ${task.source || ""}`.toLowerCase();
+  const capturedMedia = task.source === "page_media";
+  if (identity.includes("bilibili") || (capturedMedia && task.title.startsWith("B-"))) {
     return "bilibili";
   }
-  if (haystack.includes("youtube") || task.title.startsWith("Y-")) {
+  if (identity.includes("youtube") || (capturedMedia && task.title.startsWith("Y-"))) {
     return "youtube";
   }
-  if (haystack.includes("twitter") || haystack.includes("x-") || task.title.startsWith("X-")) {
+  if (identity.includes("twitter") || ((capturedMedia || task.pack_name === "hls") && task.title.startsWith("X-"))) {
     return "twitter";
   }
   return "other";

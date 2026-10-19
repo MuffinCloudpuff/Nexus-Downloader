@@ -826,7 +826,7 @@ pub struct SystemIconQuery {
     pub ext: String,
 }
 
-static ICON_CACHE: LazyLock<DashMap<String, Vec<u8>>> = LazyLock::new(DashMap::new);
+static ICON_CACHE: LazyLock<DashMap<String, (std::time::Instant, Vec<u8>)>> = LazyLock::new(DashMap::new);
 
 pub async fn get_system_icon(Query(query): Query<SystemIconQuery>) -> impl IntoResponse {
     let mut ext = query.ext.trim().to_string();
@@ -834,14 +834,14 @@ pub async fn get_system_icon(Query(query): Query<SystemIconQuery>) -> impl IntoR
         ext = format!(".{}", ext);
     }
 
-    if let Some(cached) = ICON_CACHE.get(&ext) {
+    if let Some(cached) = ICON_CACHE.get(&ext).filter(|entry| entry.0.elapsed().as_secs() < 60) {
         return (
             StatusCode::OK,
             [
                 (axum::http::header::CONTENT_TYPE, "image/png"),
-                (axum::http::header::CACHE_CONTROL, "public, max-age=86400"),
+                (axum::http::header::CACHE_CONTROL, "public, max-age=60"),
             ],
-            cached.clone(),
+            cached.1.clone(),
         )
             .into_response();
     }
@@ -854,12 +854,12 @@ pub async fn get_system_icon(Query(query): Query<SystemIconQuery>) -> impl IntoR
 
     match png_bytes_result {
         Ok(Ok(bytes)) => {
-            ICON_CACHE.insert(ext, bytes.clone());
+            ICON_CACHE.insert(ext, (std::time::Instant::now(), bytes.clone()));
             (
                 StatusCode::OK,
                 [
                     (axum::http::header::CONTENT_TYPE, "image/png"),
-                    (axum::http::header::CACHE_CONTROL, "public, max-age=86400"),
+                    (axum::http::header::CACHE_CONTROL, "public, max-age=60"),
                 ],
                 bytes,
             )

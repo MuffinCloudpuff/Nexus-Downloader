@@ -4,7 +4,7 @@ import { motion } from "motion/react";
 import { DownloadTask } from "../types";
 import { cn } from "../lib/utils";
 import { useApp } from "../store";
-import { revealPathInDesktop } from "../platform/desktop-shell";
+import { getWindowsFileIcon, revealPathInDesktop } from "../platform/desktop-shell";
 import { DEFAULT_DAEMON_URL } from "../api/daemon-client";
 
 export const YoutubeLogo = ({ className }: { className?: string }) => (
@@ -42,10 +42,7 @@ function getTypeIconUrl(ext: string, platform: string | undefined): string | nul
   if (platform === "youtube" || platform === "bilibili" || platform === "twitter") {
     return null;
   }
-  if (!ext) {
-    return null;
-  }
-  return `${DEFAULT_DAEMON_URL}/api/system-icon?ext=${encodeURIComponent(ext)}&v=2`;
+  return `${DEFAULT_DAEMON_URL}/api/system-icon?ext=${encodeURIComponent(ext)}&v=3`;
 }
 
 function fileExtension(value?: string): string {
@@ -140,15 +137,27 @@ export function TaskCard({ task }: { task: DownloadTask }) {
   const { t, pauseTaskById, resumeTaskById, deleteTaskById, retryTaskById } = useApp();
   const ext = taskIconExtension(task);
   const shellIconUrl = getTypeIconUrl(ext, task.platform);
+  const [nativeIcon, setNativeIcon] = useState<{ key: string; url: string } | null>(null);
+  const iconKey = `${shellIconUrl}|${task.outputPath}|${task.status}|${task.artifactState}`;
   const [shellIconFailed, setShellIconFailed] = useState(false);
 
   useEffect(() => {
+    let disposed = false;
     setShellIconFailed(false);
-  }, [shellIconUrl]);
+    if (shellIconUrl) {
+      void getWindowsFileIcon(task.outputPath, ext).then(url => {
+        if (!disposed && url) {
+          setNativeIcon({ key: iconKey, url });
+          setShellIconFailed(false);
+        }
+      }).catch(() => { /* Browser preview and older shells retain the HTTP fallback. */ });
+    }
+    return () => { disposed = true; };
+  }, [iconKey, shellIconUrl, task.outputPath, ext]);
 
   const platform = getPlatformConfig(
     task,
-    shellIconFailed ? null : shellIconUrl,
+    shellIconFailed ? null : nativeIcon?.key === iconKey ? nativeIcon.url : shellIconUrl,
     () => setShellIconFailed(true),
   );
   const progress = Math.min(100, Math.max(0, task.progress * 100));
