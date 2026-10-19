@@ -100,6 +100,7 @@ pub async fn create_task(
 
     let request_url_host = url_host(&request.payload.url);
     let request_url_path_kind = url_path_kind(&request.payload.url);
+    let deferred = request.payload.defer_start;
     let cmd = CreateTaskCommand::from_http(request, decrypted_cookies);
     tracing::info!(
         request_id = %cmd.request_id,
@@ -121,7 +122,12 @@ pub async fn create_task(
         .client_context
         .as_ref()
         .and_then(|context| context.trace_id.clone());
-    match state.app_service.create_task(cmd).await {
+    let result = if deferred {
+        state.app_service.create_deferred_browser_task(cmd).await
+    } else {
+        state.app_service.create_task(cmd).await
+    };
+    match result {
         Ok(accepted) => {
             tracing::info!(
                 request_id = %accepted.request_id,
@@ -886,6 +892,10 @@ pub fn create_router(
     Router::new()
         .route("/api/capabilities", get(get_capabilities))
         .route("/api/tasks", post(create_task).get(get_tasks))
+        .route(
+            "/api/browser-downloads/import",
+            post(import_browser_download),
+        )
         .route("/api/settings", get(get_settings).patch(patch_settings))
         .route("/api/runtime/metrics", get(get_runtime_metrics))
         .route("/api/storage/path_stats", get(get_storage_path_stats))
@@ -899,6 +909,10 @@ pub fn create_router(
         .route("/api/tasks/{task_id}/events", get(get_task_events))
         .route("/api/tasks/{task_id}/pause", post(pause_task_endpoint))
         .route("/api/tasks/{task_id}/resume", post(resume_task_endpoint))
+        .route(
+            "/api/tasks/{task_id}/start",
+            post(start_browser_task_endpoint),
+        )
         .route("/api/tasks/{task_id}/cancel", post(cancel_task_endpoint))
         .route("/api/tasks/{task_id}/delete", post(delete_task_endpoint))
         .route("/api/tasks/{task_id}/retry", post(retry_task_endpoint))
@@ -914,7 +928,44 @@ pub fn create_router(
 }
 
 async fn get_capabilities(_auth: AuthToken) -> Json<Value> {
-    Json(json!({"browser_download_save_path": true}))
+    Json(
+        json!({"browser_download_save_path": true, "browser_download_import": true, "browser_download_deferred_start": true}),
+    )
+}
+
+async fn start_browser_task_endpoint(
+    _auth: AuthToken,
+    axum::extract::Path(task_id): axum::extract::Path<String>,
+    State(state): State<AppState>,
+) -> impl IntoResponse {
+    match state
+        .core_service
+        .start_deferred_browser_task(&task_id)
+        .await
+    {
+        Ok(()) => (StatusCode::OK, Json(json!({"command_accepted": true}))),
+        Err(error) => (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"command_accepted": false,"message":error.to_string()})),
+        ),
+    }
+}
+
+async fn import_browser_download(
+    _auth: AuthToken,
+    State(state): State<AppState>,
+    Json(request): Json<crate::protocol::task::ImportBrowserDownloadReq>,
+) -> impl IntoResponse {
+    match state.app_service.import_browser_download(request).await {
+        Ok(accepted) => (
+            StatusCode::OK,
+            Json(json!({"accepted": true, "task_id": accepted.task_id})),
+        ),
+        Err(error) => (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"accepted": false, "error": error})),
+        ),
+    }
 }
 
 fn is_allowed_cors_origin(origin: &HeaderValue) -> bool {
@@ -1006,6 +1057,237 @@ mod tests {
             axum::serve(listener, router).await.unwrap();
         });
         (format!("http://{addr}"), handle)
+    }
+
+    #[tokio::test]
+    async fn deferred_browser_download_waits_for_explicit_start() {
+        let (base_url, api_handle) = spawn_test_http_api().await;
+        let client = Client::new();
+        let output = std::env::temp_dir().join(format!(
+            "nexus-deferred-{}.txt",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let source_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let source_url = format!("http://{}/file", source_listener.local_addr().unwrap());
+        let source_handle = tokio::spawn(async move {
+            axum::serve(
+                source_listener,
+                Router::new().route("/file", get(|| async { "one-byte-compatible fixture" })),
+            )
+            .await
+            .unwrap();
+        });
+        let token = client.post(format!("{base_url}/api/pairing/request")).json(&json!({"request_id":"deferred-pair","client_context":{"extension_id":"test","protocol_version":1}}))
+            .send().await.unwrap().json::<Value>().await.unwrap()["token"].as_str().unwrap().to_owned();
+        let created: Value = client
+            .post(format!("{base_url}/api/tasks"))
+            .bearer_auth(&token)
+            .json(&json!({
+                "request_id":"deferred-file","source":"download","title":"fixture.txt",
+                "payload":{"url":source_url,"save_path":output.to_string_lossy(),"defer_start":true}
+            }))
+            .send()
+            .await
+            .unwrap()
+            .error_for_status()
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(created["accepted"], true);
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert!(
+            !output.exists(),
+            "task acceptance must not write a browser-owned target"
+        );
+        client
+            .post(format!("{base_url}/api/tasks/deferred-file/start"))
+            .bearer_auth(&token)
+            .send()
+            .await
+            .unwrap()
+            .error_for_status()
+            .unwrap();
+        let mut done = false;
+        for _ in 0..100 {
+            let task: Value = client
+                .get(format!("{base_url}/api/tasks/deferred-file"))
+                .bearer_auth(&token)
+                .send()
+                .await
+                .unwrap()
+                .json()
+                .await
+                .unwrap();
+            if task["status"] == "completed" {
+                done = true;
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        assert!(done);
+        assert_eq!(
+            tokio::fs::read(&output).await.unwrap(),
+            b"one-byte-compatible fixture"
+        );
+        assert_eq!(
+            client
+                .post(format!("{base_url}/api/tasks/deferred-file/start"))
+                .bearer_auth(&token)
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::OK
+        );
+        client
+            .post(format!("{base_url}/api/tasks/deferred-file/delete"))
+            .bearer_auth(&token)
+            .send()
+            .await
+            .unwrap()
+            .error_for_status()
+            .unwrap();
+        assert!(!output.exists());
+        api_handle.abort();
+        source_handle.abort();
+    }
+
+    #[tokio::test]
+    async fn browser_file_import_preserves_bytes_paths_and_task_lifecycle() {
+        let (base_url, server_handle) = spawn_test_http_api().await;
+        let client = Client::new();
+        let root = std::env::temp_dir().join(format!(
+            "nexus-browser-import-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        tokio::fs::create_dir_all(&root).await.unwrap();
+        let token = client.post(format!("{base_url}/api/pairing/request"))
+            .json(&json!({"request_id":"browser-import-pair","client_context":{"extension_id":"test","protocol_version":1}}))
+            .send().await.unwrap().json::<Value>().await.unwrap()["token"].as_str().unwrap().to_string();
+        let endpoint = format!("{base_url}/api/browser-downloads/import");
+        assert_eq!(
+            client
+                .post(&endpoint)
+                .json(&json!({}))
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::UNAUTHORIZED
+        );
+        for (index, (extension, category, url)) in [
+            ("wav", "audio", "blob:https://site.test/audio"),
+            ("m4a", "audio", "data:audio/mp4;base64,PRIVATE_FILE_CONTENT"),
+            ("zip", "archive", "https://site.test/export"),
+            ("unusual", "other", "file:///D:/original.unusual"),
+        ]
+        .iter()
+        .enumerate()
+        {
+            let file = root.join(format!("用户指定位置-{index}.{extension}"));
+            let bytes = format!("original bytes {index}");
+            tokio::fs::write(&file, bytes.as_bytes()).await.unwrap();
+            let body = json!({"request_id":format!("browser-import-{index}"),"save_path":file.to_string_lossy(),
+                "source_url":url,"mime":null,"size":bytes.len()});
+            let (a, b) = tokio::join!(
+                client
+                    .post(&endpoint)
+                    .bearer_auth(&token)
+                    .json(&body)
+                    .send(),
+                client
+                    .post(&endpoint)
+                    .bearer_auth(&token)
+                    .json(&body)
+                    .send()
+            );
+            let accepted: Value = a.unwrap().error_for_status().unwrap().json().await.unwrap();
+            let replay: Value = b.unwrap().error_for_status().unwrap().json().await.unwrap();
+            assert_eq!(accepted["accepted"], true);
+            assert_eq!(accepted["task_id"], replay["task_id"]);
+            let id = accepted["task_id"].as_str().unwrap();
+            let summary: Value = client
+                .get(format!("{base_url}/api/tasks"))
+                .bearer_auth(&token)
+                .send()
+                .await
+                .unwrap()
+                .json()
+                .await
+                .unwrap();
+            let task = summary["tasks"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|task| task["task_id"] == id)
+                .unwrap();
+            assert_eq!(task["status"], "completed");
+            assert_eq!(task["output_path"], file.to_string_lossy().as_ref());
+            assert_eq!(task["output_category"], *category);
+            assert_eq!(task["received_bytes"], bytes.len());
+            assert!(!summary.to_string().contains("PRIVATE_FILE_CONTENT"));
+            assert_eq!(tokio::fs::read(&file).await.unwrap(), bytes.as_bytes());
+            // Retry must reject BEFORE cleanup, otherwise a revoked blob loses its only copy.
+            assert!(
+                !client
+                    .post(format!("{base_url}/api/tasks/{id}/retry"))
+                    .bearer_auth(&token)
+                    .json(&json!({}))
+                    .send()
+                    .await
+                    .unwrap()
+                    .status()
+                    .is_success()
+            );
+            assert!(file.is_file());
+            let mut wrong = body.clone();
+            wrong["save_path"] = json!(root.join("different.wav").to_string_lossy());
+            assert_eq!(
+                client
+                    .post(&endpoint)
+                    .bearer_auth(&token)
+                    .json(&wrong)
+                    .send()
+                    .await
+                    .unwrap()
+                    .status(),
+                StatusCode::BAD_REQUEST
+            );
+            client
+                .post(format!("{base_url}/api/tasks/{id}/delete"))
+                .bearer_auth(&token)
+                .json(&json!({}))
+                .send()
+                .await
+                .unwrap()
+                .error_for_status()
+                .unwrap();
+            assert!(!file.exists());
+        }
+        for (path, size) in [
+            (root.to_string_lossy().to_string(), 0),
+            (root.join("missing.wav").to_string_lossy().to_string(), 10),
+            ("relative.wav".into(), 1),
+        ] {
+            assert_eq!(client.post(&endpoint).bearer_auth(&token).json(&json!({
+                "request_id":"invalid-file","save_path":path,"source_url":"blob:https://site.test/x","size":size
+            })).send().await.unwrap().status(), StatusCode::BAD_REQUEST);
+        }
+        let file = root.join("size.wav");
+        tokio::fs::write(&file, b"abc").await.unwrap();
+        assert_eq!(client.post(&endpoint).bearer_auth(&token).json(&json!({"request_id":"wrong-size",
+            "save_path":file.to_string_lossy(),"source_url":"blob:https://site.test/x","size":9
+        })).send().await.unwrap().status(), StatusCode::BAD_REQUEST);
+        assert_eq!(tokio::fs::read(&file).await.unwrap(), b"abc");
+        server_handle.abort();
+        tokio::fs::remove_dir_all(root).await.unwrap();
     }
 
     #[tokio::test]

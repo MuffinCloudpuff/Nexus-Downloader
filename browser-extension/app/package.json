@@ -1,7 +1,7 @@
 {
   "name": "gd3-browser-extension",
   "private": true,
-  "version": "1.4.1",
+  "version": "1.4.2",
   "type": "module",
   "scripts": {
     "build": "node ./scripts/build.mjs",
@@ -11,6 +11,7 @@
     "test:icons": "node ./scripts/test-brand-icons.mjs",
     "test:branding": "node ./scripts/test-branding.mjs",
     "test:downloads": "node ./scripts/test-download-target.mjs",
+    "test:coverage": "node ./scripts/test-download-coverage.mjs",
     "test:handoff": "node ./scripts/test-download-handoff.mjs",
     "typecheck": "tsc --noEmit"
   },

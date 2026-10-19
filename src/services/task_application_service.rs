@@ -10,6 +10,7 @@ pub struct TaskApplicationService {
     core_service: Arc<CoreService>,
     parser_registry: Arc<ParserRegistry>,
     settings_service: Arc<SettingsService>,
+    browser_import_lock: tokio::sync::Mutex<()>,
 }
 
 impl TaskApplicationService {
@@ -22,12 +23,36 @@ impl TaskApplicationService {
             core_service,
             parser_registry,
             settings_service,
+            browser_import_lock: tokio::sync::Mutex::new(()),
         }
     }
 
     pub async fn create_task(
         &self,
         cmd: CreateTaskCommand,
+    ) -> Result<CreateTaskAccepted, TaskError> {
+        self.create_task_with_start(cmd, false).await
+    }
+
+    pub async fn create_deferred_browser_task(
+        &self,
+        cmd: CreateTaskCommand,
+    ) -> Result<CreateTaskAccepted, TaskError> {
+        if cmd.source.as_deref() != Some("download") || cmd.save_path.is_none() {
+            return Err(TaskError {
+                code: ErrorCode::InvalidRequest,
+                message: "deferred start is only for browser downloads".into(),
+                retryable: false,
+                stage: Some("gateway".into()),
+            });
+        }
+        self.create_task_with_start(cmd, true).await
+    }
+
+    async fn create_task_with_start(
+        &self,
+        cmd: CreateTaskCommand,
+        deferred: bool,
     ) -> Result<CreateTaskAccepted, TaskError> {
         let req_id = cmd.request_id.clone();
         let trace_id = cmd
@@ -130,9 +155,21 @@ impl TaskApplicationService {
                 task.source = cmd.source.clone();
                 task.cookie_str = cmd.decrypted_cookies.clone();
 
-                self.core_service
-                    .add_task(task, Some(cmd.request_id.clone()))
-                    .await;
+                if deferred {
+                    self.core_service
+                        .add_deferred_browser_task(task)
+                        .await
+                        .map_err(|error| TaskError {
+                            code: ErrorCode::InternalError,
+                            message: error.to_string(),
+                            retryable: false,
+                            stage: Some("queue".into()),
+                        })?;
+                } else {
+                    self.core_service
+                        .add_task(task, Some(cmd.request_id.clone()))
+                        .await;
+                }
 
                 Ok(CreateTaskAccepted {
                     request_id: cmd.request_id,
@@ -164,6 +201,133 @@ impl TaskApplicationService {
             .pause_task(task_id)
             .await
             .map_err(task_control_error)
+    }
+
+    pub async fn import_browser_download(
+        &self,
+        request: crate::protocol::task::ImportBrowserDownloadReq,
+    ) -> Result<CreateTaskAccepted, TaskError> {
+        use crate::core::models::{ExecutionKind, PackId, Task};
+        use crate::protocol::task::{CreateTaskHttpReq, CreateTaskPayload};
+        let invalid = |message: String| TaskError {
+            code: ErrorCode::InvalidRequest,
+            message,
+            retryable: false,
+            stage: Some("browser_import".into()),
+        };
+        if request.request_id.trim().is_empty() || request.request_id.len() > 200 {
+            return Err(invalid("invalid browser import request_id".into()));
+        }
+        output_destination::validate_browser_file_path(&request.save_path).map_err(&invalid)?;
+        let scheme = request
+            .source_url
+            .split(':')
+            .next()
+            .unwrap_or("")
+            .to_ascii_lowercase();
+        if !matches!(
+            scheme.as_str(),
+            "http" | "https" | "blob" | "data" | "file" | "filesystem"
+        ) {
+            return Err(invalid("unsupported browser file origin".into()));
+        }
+        // Never persist a potentially huge data URL (or embedded file bytes).
+        let origin = if scheme == "data" {
+            "data:".to_owned()
+        } else {
+            request.source_url
+        };
+        let filename = std::path::Path::new(&request.save_path)
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("download")
+            .to_owned();
+        let cmd = CreateTaskCommand::from_http(
+            CreateTaskHttpReq {
+                request_id: request.request_id.clone(),
+                source: Some("download".into()),
+                title: filename.clone(),
+                payload: CreateTaskPayload {
+                    url: origin.clone(),
+                    filename: Some(filename.clone()),
+                    save_path: Some(request.save_path.clone()),
+                    mime: request.mime,
+                    size: request.size,
+                    ..Default::default()
+                },
+                client_context: None,
+            },
+            None,
+        );
+        let _guard = self.browser_import_lock.lock().await;
+        if let Some(task) = self
+            .core_service
+            .get_task_by_request_id(&request.request_id)
+            .await
+        {
+            if task.payload_fingerprint.as_deref() != Some(cmd.payload_fingerprint.as_str()) {
+                return Err(invalid(
+                    "browser import request_id already belongs to another file".into(),
+                ));
+            }
+            return Ok(CreateTaskAccepted {
+                request_id: request.request_id,
+                trace_id: None,
+                task_id: task.id,
+                status: task.status,
+                event_cursor: task.event_cursor,
+            });
+        }
+        let metadata = tokio::fs::symlink_metadata(&request.save_path)
+            .await
+            .map_err(|_| invalid("browser output file does not exist".into()))?;
+        if !metadata.is_file()
+            || metadata.file_type().is_symlink()
+            || request.size.is_some_and(|size| size != metadata.len())
+        {
+            return Err(invalid(
+                "browser output is not a completed regular file of the expected size".into(),
+            ));
+        }
+        let mut random = [0u8; 16];
+        getrandom::fill(&mut random)
+            .map_err(|_| invalid("cannot allocate browser task id".into()))?;
+        let id = format!(
+            "browser-{}",
+            random
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>()
+        );
+        let mut task = Task::new(
+            id,
+            filename,
+            origin,
+            PackId::Http,
+            metadata.len(),
+            request.save_path,
+        )
+        .with_execution_kind(ExecutionKind::Other("browser_local".into()));
+        task.output_category = Some(output_category::classify_output(
+            &cmd,
+            &crate::core::execution_plan::ExecutionPlan::from_task(task.clone()),
+        ));
+        task.received_bytes = metadata.len();
+        task.request_id = Some(request.request_id.clone());
+        task.source = Some("download".into());
+        task.payload_fingerprint = Some(cmd.payload_fingerprint);
+        let task = self
+            .core_service
+            .add_completed_browser_task(task)
+            .await
+            .map_err(|error| invalid(error.to_string()))?;
+        Ok(CreateTaskAccepted {
+            request_id: request.request_id,
+            trace_id: None,
+            task_id: task.id,
+            status: task.status,
+            event_cursor: task.event_cursor,
+        })
     }
 
     pub async fn resume_task(&self, task_id: &str) -> Result<(), TaskError> {
@@ -254,6 +418,7 @@ mod tests {
                 title: title.to_string(),
                 payload: CreateTaskPayload {
                     url: "magnet:?xt=urn:btih:0123456789abcdef".to_string(),
+                    defer_start: false,
                     headers: HashMap::new(),
                     resources: vec![],
                     encrypted_cookies: None,

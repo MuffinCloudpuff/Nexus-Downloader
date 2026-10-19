@@ -45,6 +45,7 @@ export interface CapturedResourcePayload {
 
 export interface CreateTaskPayload {
   url: string;
+  defer_start?: boolean;
   headers?: Record<string, string>;
   resources?: CapturedResourcePayload[];
   encrypted_cookies?: string;

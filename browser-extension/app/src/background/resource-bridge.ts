@@ -131,6 +131,7 @@ const MIME_EXTENSIONS: Record<string, string> = {
 
 export function createResourceBridge(options: {
   createTask: CreateTaskSender;
+  startBrowserTask?: (id: string) => Promise<void>;
   recordTelemetry?: TelemetryRecorder;
 }) {
   let bridgePersistTimer: number | null = null;
@@ -1239,6 +1240,7 @@ export function createResourceBridge(options: {
           headers,
           filename: resolvedFilename,
           save_path: downloadItem.filename,
+          defer_start: options.startBrowserTask ? true : undefined,
           mime: downloadItem.mime || matchedResource?.mime || mimeFromUrl(finalUrl) || undefined,
           size:
             typeof downloadItem.totalBytes === "number" && downloadItem.totalBytes > 0
@@ -1272,6 +1274,10 @@ export function createResourceBridge(options: {
       });
       if (!result.ok) {
         throw new Error(result.message || "browser download handoff was rejected by daemon");
+      }
+      if (options.startBrowserTask) {
+        if (!result.taskId) throw new Error("backend accepted a browser task without an ID");
+        return () => options.startBrowserTask!(result.taskId!);
       }
       // Task successfully created, no need to open action popup for seamless background download
     } catch (error) {

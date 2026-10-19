@@ -43,6 +43,13 @@ async fn main() {
     // 1. 初始化可持久化配置
     let config_dir = exe_dir.join("config");
     let _ = tokio::fs::create_dir_all(&config_dir).await;
+    // Browser native-messaging processes only provide pairing. They must not
+    // load/recover the task store or start another scheduler before returning.
+    if is_native_messaging {
+        let auth_store = Arc::new(PairingStore::new(config_dir.join("pairing_token.txt")));
+        gd3_daemon::native_messaging::start_native_messaging_host(auth_store).await;
+        return;
+    }
     let settings_path = config_dir.join("settings.json");
     let settings_service = Arc::new(SettingsService::load(settings_path.to_str().unwrap()).await);
 
@@ -94,11 +101,6 @@ async fn main() {
         settings_service.clone(),
     ));
     let auth_store = Arc::new(PairingStore::new(config_dir.join("pairing_token.txt")));
-
-    if is_native_messaging {
-        gd3_daemon::native_messaging::start_native_messaging_host(auth_store).await;
-        return;
-    }
 
     // 6. HTTP API 是浏览器扩展和桌面 UI 的主协议入口，主进程围绕它常驻。
     let app =

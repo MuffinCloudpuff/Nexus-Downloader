@@ -10,6 +10,7 @@ import {createFeatureBridge} from "./background/feature-bridge";
 import {createMediaBridge} from "./background/media-bridge";
 import {createResourceBridge} from "./background/resource-bridge";
 import {handoffAndClearBrowserDownload} from "./background/browser-download-handoff";
+import {createBrowserDownloadRequestPolicy} from "./background/browser-download-request-policy";
 import {createTaskEventSubscriptions} from "./background/task-event-subscriptions";
 import {createTaskStore} from "./background/task-store";
 import {
@@ -23,6 +24,7 @@ import {
 import {INTERCEPT_DOWNLOADS_KEY, MEDIA_DOWNLOAD_OVERLAY_KEY,} from "./background/constants";
 import {
     cancelDownload,
+    eraseDownloadFromHistory,
     findTab,
     loadFromLocalStorage,
     openActionPopup,
@@ -69,6 +71,7 @@ function notifyTaskUpdated(task: GenericTaskSummary | null) {
 }
 
 const daemonClient = createDaemonClient();
+const browserDownloadRequests = createBrowserDownloadRequestPolicy();
 const clientTelemetry = createClientTelemetry((events) => daemonClient.sendClientEvents(events));
 const taskStore = createTaskStore();
 const taskSubscriptions = createTaskEventSubscriptions({
@@ -318,6 +321,10 @@ async function performDaemonTaskAction(taskId: string, action: string, traceId =
 
 const resourceBridge = createResourceBridge({
   createTask: createDaemonTask,
+  startBrowserTask: async id => {
+    const result = await daemonClient.sendTaskCommand(id, "start");
+    if (!result.command_accepted) throw new Error("浏览器任务已创建，但后台尚未启动传输");
+  },
   recordTelemetry: recordClientTelemetry,
 });
 const featureBridge = createFeatureBridge();
@@ -509,6 +516,7 @@ chrome.webNavigation.onCommitted.addListener((details) => {
 
 chrome.webRequest.onBeforeSendHeaders.addListener(
   (details) => {
+    browserDownloadRequests.record(details.url, details.method);
     resourceBridge.onRequestHeaders(details);
     return undefined;
   },
@@ -535,7 +543,7 @@ chrome.webRequest.onResponseStarted.addListener(
 
 async function interceptBrowserDownload(
   downloadItem: chrome.downloads.DownloadItem,
-) {
+): Promise<boolean> {
   const traceId = createTraceId("browser_download_intercept");
   const finalUrl = downloadItem.finalUrl || downloadItem.url;
   const commonTelemetry = {
@@ -562,20 +570,20 @@ async function interceptBrowserDownload(
       message: "browser download intercept is disabled",
       details: { ...commonTelemetry.details, reason: "disabled" },
     });
-    return;
+    return false;
   }
-  if (!/^https?:/i.test(finalUrl)) {
+  if (!browserDownloadRequests.canReplay(downloadItem)) {
     recordClientTelemetry({
       ...commonTelemetry,
       event_type: "client.intercept_decision",
       status: "skipped",
-      message: "download URL is not HTTP",
-      details: { ...commonTelemetry.details, reason: "non_http_url" },
+      message: "browser will save this local or non-replayable file before Rust import",
+      details: { ...commonTelemetry.details, reason: "browser_file_import_after_completion" },
     });
-    return;
+    return false;
   }
 
-  if (downloadItem.state !== "in_progress" || !isAbsoluteDownloadPath(downloadItem.filename)) return;
+  if (downloadItem.state !== "in_progress" || !isAbsoluteDownloadPath(downloadItem.filename)) return false;
 
   if (!daemonClient.isReady()) {
     if (daemonClient.hasToken()) {
@@ -596,7 +604,7 @@ async function interceptBrowserDownload(
           message: messageFromUnknownError(error, "daemon reconnect failed before intercept"),
           details: { ...commonTelemetry.details, reason: "daemon_reconnect_failed" },
         });
-        return;
+        return false;
       }
     }
   }
@@ -609,7 +617,7 @@ async function interceptBrowserDownload(
       message: "daemon is not ready for browser download intercept",
       details: { ...commonTelemetry.details, reason: "daemon_not_ready" },
     });
-    return;
+    return false;
   }
 
   recordClientTelemetry({
@@ -622,9 +630,9 @@ async function interceptBrowserDownload(
   try {
     // Older daemons silently ignore unknown fields: leave the browser in
     // charge unless the backend explicitly supports exact destinations.
-    if (!await daemonClient.supportsBrowserSavePath()) return;
+    if (!await daemonClient.supportsBrowserSavePath()) return false;
     const latest = await getBrowserDownload(downloadItem.id);
-    if (latest?.state !== "in_progress" || !isAbsoluteDownloadPath(latest.filename)) return;
+    if (latest?.state !== "in_progress" || !isAbsoluteDownloadPath(latest.filename)) return false;
     downloadItem = latest;
     await cancelDownload(downloadItem.id);
   } catch (error) {
@@ -636,7 +644,7 @@ async function interceptBrowserDownload(
       details: { ...commonTelemetry.details, reason: "cancel_failed" },
     });
     // Cleanup failed but the browser will still finish the download as fallback.
-    return;
+    return false;
   }
 
   try {
@@ -659,6 +667,7 @@ async function interceptBrowserDownload(
         : messageFromUnknownError(cleanup.cleanupError, "browser history cleanup failed after successful handoff"),
       details: {...commonTelemetry.details, reason: cleanup.historyCleared ? "handoff_accepted" : "history_cleanup_failed"},
     });
+    return true;
   } catch (error) {
     recordClientTelemetry({
       ...commonTelemetry,
@@ -667,6 +676,7 @@ async function interceptBrowserDownload(
       message: messageFromUnknownError(error, "browser download handoff failed"),
       details: { ...commonTelemetry.details, reason: "handoff_failed" },
     });
+    return false;
   }
 }
 
@@ -675,7 +685,29 @@ function reply(sendResponse: (response?: unknown) => void, response: Promise<unk
   return true;
 }
 
-listenForConfirmedDownloadTargets(interceptBrowserDownload);
+listenForConfirmedDownloadTargets(interceptBrowserDownload, {
+  prepare: async item => {
+    await initialization;
+    if (!interceptDownloads || !browserDownloadRequests.canReplay(item)) return false;
+    if (!daemonClient.isReady()) await daemonClient.connect();
+    return interceptDownloads && daemonClient.isReady() && await daemonClient.supportsBrowserSavePath();
+  },
+  completed: async item => {
+    await initialization;
+    if (!interceptDownloads) return;
+    if (!daemonClient.isReady()) await daemonClient.connect();
+    await daemonClient.importBrowserDownload(item);
+    // The original file stays exactly where the user saved it. Erase one
+    // browser record only after Rust has accepted its task metadata.
+    await eraseDownloadFromHistory(item.id);
+    await refreshDaemonTasks();
+  },
+  onError: (downloadId, error) => recordClientTelemetry({
+    event_type: "client.browser_file_import", surface: "background", action: "browser_file_import",
+    source: "download", status: "failed", message: messageFromUnknownError(error, "浏览器文件接入后台失败，已保留原文件和浏览器记录"),
+    details: {downloadId},
+  }),
+});
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (!message || typeof message !== "object") {
@@ -853,4 +885,4 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
 });
 
-void initialize();
+const initialization = initialize();

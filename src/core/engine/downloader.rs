@@ -737,6 +737,36 @@ impl UniversalDownloader {
         insert_raw_range_headers(&mut probe_headers, 0, 0)?;
         let probe_res = self.client.get(url).headers(probe_headers).send().await?;
         let probe_status = probe_res.status();
+        // A valid empty file has no satisfiable byte range. Retry as a normal
+        // GET instead of treating Content-Range: bytes */0 as a failed file.
+        if probe_status == StatusCode::RANGE_NOT_SATISFIABLE
+            && probe_res
+                .headers()
+                .get(header::CONTENT_RANGE)
+                .and_then(|v| v.to_str().ok())
+                == Some("bytes */0")
+        {
+            drop(probe_res);
+            let response = self.client.get(url).headers(req_headers).send().await?;
+            anyhow::ensure!(
+                response.status() == StatusCode::OK && response.content_length() == Some(0),
+                "empty-file probe did not return an empty file"
+            );
+            return self
+                .download_full_response(
+                    response,
+                    output_path,
+                    task_id,
+                    task_service,
+                    resume_store,
+                    token,
+                    progress_start,
+                    progress_end,
+                    final_status,
+                    max_size,
+                )
+                .await;
+        }
         // A server may legitimately ignore Range and return the entire file.
         // Consume that response once rather than failing small image downloads
         // or splitting a non-range response into duplicate chunks.

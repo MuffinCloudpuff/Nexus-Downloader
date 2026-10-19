@@ -194,18 +194,37 @@ export function createDaemonClient() {
 
   async function supportsBrowserSavePath(): Promise<boolean> {
     try {
-      const capabilities = await requestJson<{browser_download_save_path?: boolean}>(
+      const capabilities = await requestJson<{browser_download_save_path?: boolean; browser_download_deferred_start?: boolean}>(
         "/api/capabilities", {method: "GET"},
       );
-      return capabilities?.browser_download_save_path === true;
+      return capabilities?.browser_download_save_path === true && capabilities.browser_download_deferred_start === true;
     } catch {
       return false;
     }
   }
 
+  async function importBrowserDownload(item: chrome.downloads.DownloadItem): Promise<void> {
+    const capabilities = await requestJson<{browser_download_import?: boolean}>("/api/capabilities");
+    if (capabilities.browser_download_import !== true) {
+      throw new Error("请更新托盘后台，以便统一管理网页本地文件");
+    }
+    // startTime protects against browser download-ID reuse after profile resets.
+    const result = await requestJson<{accepted: boolean}>("/api/browser-downloads/import", {
+      method: "POST",
+      body: JSON.stringify({
+        request_id: `browser-file:${item.id}:${item.startTime}`,
+        save_path: item.filename,
+        source_url: /^data:/i.test(item.finalUrl || item.url) ? "data:" : (item.finalUrl || item.url),
+        mime: item.mime || undefined,
+        size: item.fileSize >= 0 ? item.fileSize : item.totalBytes >= 0 ? item.totalBytes : undefined,
+      }),
+    });
+    if (!result.accepted) throw new Error("后台未接受浏览器已保存文件");
+  }
+
   async function sendTaskCommand(
     taskId: string,
-    command: "pause" | "resume" | "cancel" | "delete",
+    command: "pause" | "resume" | "cancel" | "delete" | "start",
   ): Promise<TaskCommandResp> {
     return requestJson<TaskCommandResp>(`/api/tasks/${encodeURIComponent(taskId)}/${command}`, {
       method: "POST",
@@ -475,6 +494,7 @@ export function createDaemonClient() {
     connect,
     createTask,
     supportsBrowserSavePath,
+    importBrowserDownload,
     ensureReconnectAlarm,
     getTask,
     getTaskEvents,

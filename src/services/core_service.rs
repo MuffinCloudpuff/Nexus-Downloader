@@ -71,6 +71,7 @@ pub struct CoreService {
     request_id_map: Arc<RwLock<std::collections::HashMap<String, String>>>,
     // 断点恢复存储
     resume_store: Arc<crate::core::resume::ResumeStore>,
+    deferred_tasks: tokio::sync::Mutex<std::collections::HashSet<String>>,
 }
 
 impl CoreService {
@@ -78,6 +79,7 @@ impl CoreService {
         let max_tasks = get_config().max_task_num as usize;
         Self {
             task_service,
+            deferred_tasks: tokio::sync::Mutex::new(std::collections::HashSet::new()),
             concurrency_limiter: Arc::new(Semaphore::new(max_tasks)),
             queue_state: Arc::new(RwLock::new(TaskQueueState {
                 running_tasks: std::collections::HashMap::new(),
@@ -212,6 +214,64 @@ impl CoreService {
         Ok(())
     }
 
+    pub async fn add_deferred_browser_task(&self, task: Task) -> Result<()> {
+        self.deferred_tasks.lock().await.insert(task.id.clone());
+        self.task_service.add_task(task.clone()).await?;
+        if let Some(request_id) = task.request_id {
+            self.request_id_map
+                .write()
+                .await
+                .insert(request_id, task.id);
+        }
+        Ok(())
+    }
+
+    pub async fn start_deferred_browser_task(&self, id: &str) -> Result<(), TaskControlError> {
+        let task = self
+            .task_service
+            .get_task(id)
+            .await
+            .ok_or(TaskControlError::NotFound)?;
+        let deferred = self.deferred_tasks.lock().await.remove(id);
+        if !deferred
+            && task.source.as_deref() == Some("download")
+            && matches!(
+                task.status,
+                TaskStatus::Queued | TaskStatus::Downloading | TaskStatus::Completed
+            )
+        {
+            return Ok(()); // An activation retry must never enqueue a duplicate.
+        }
+        if task.status != TaskStatus::Queued || !deferred {
+            return Err(TaskControlError::InvalidState {
+                command: "start",
+                status: task.status,
+            });
+        }
+        self.queue_state.write().await.waiting_tasks.push(task);
+        self.schedule().await;
+        Ok(())
+    }
+
+    /// Register an already materialized browser file without scheduling a
+    /// second download. Use the normal event/persistence stream for every UI.
+    pub async fn add_completed_browser_task(&self, task: Task) -> Result<Task> {
+        let id = task.id.clone();
+        let path = task.path.clone();
+        self.task_service.add_task(task.clone()).await?;
+        self.task_service.complete_task(&id, path).await;
+        if let Some(request_id) = task.request_id {
+            self.request_id_map
+                .write()
+                .await
+                .insert(request_id, id.clone());
+        }
+        self.task_service
+            .get_task(&id)
+            .await
+            .ok_or_else(|| anyhow::anyhow!("imported task disappeared"))
+    }
+
     pub async fn get_task_snapshot(&self) -> Vec<serde_json::Value> {
         let tasks = self.task_service.get_tasks().await;
         tasks
@@ -318,6 +378,7 @@ impl CoreService {
             self.request_id_map.write().await.remove(request_id);
         }
         self.task_service.remove_task(task_id).await;
+        self.deferred_tasks.lock().await.remove(task_id);
         Ok(())
     }
 
@@ -325,6 +386,14 @@ impl CoreService {
         let Some(task) = self.task_service.get_task(task_id).await else {
             return Err(TaskControlError::NotFound);
         };
+        // Blob/data URLs may already have been revoked. Never delete the only
+        // saved copy in an attempt to re-download an imported browser file.
+        if task.resolved_execution_kind() == ExecutionKind::Other("browser_local".into()) {
+            return Err(TaskControlError::UnsupportedOperation {
+                command: "retry",
+                execution_kind: task.resolved_execution_kind(),
+            });
+        }
         if !matches!(
             task.status,
             TaskStatus::Completed | TaskStatus::Failed | TaskStatus::Canceled

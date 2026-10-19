@@ -65,6 +65,7 @@ mod tests {
             title: "Captured".to_string(),
             payload: CreateTaskPayload {
                 url: "https://example.com/master.m3u8".to_string(),
+                defer_start: false,
                 headers: HashMap::from([(
                     "referer".to_string(),
                     "https://example.com".to_string(),

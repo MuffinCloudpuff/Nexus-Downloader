@@ -13,9 +13,22 @@ pub struct CreateTaskHttpReq {
     pub client_context: Option<ClientContext>,
 }
 
+/// A file the browser has already saved (including blob/data downloads).
+/// No file contents, browser cookies or data-URL bodies cross this endpoint.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct ImportBrowserDownloadReq {
+    pub request_id: String,
+    pub save_path: String,
+    pub source_url: String,
+    pub mime: Option<String>,
+    pub size: Option<u64>,
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct CreateTaskPayload {
     pub url: String,
+    #[serde(default)]
+    pub defer_start: bool,
     #[serde(default)]
     pub headers: HashMap<String, String>,
     #[serde(default)]
@@ -97,6 +110,7 @@ pub struct CreateTaskCommand {
 
 impl CreateTaskCommand {
     pub fn from_http(req: CreateTaskHttpReq, decrypted_cookies: Option<String>) -> Self {
+        let deferred = req.payload.defer_start;
         let mut command = Self {
             request_id: req.request_id,
             source: req.source,
@@ -114,6 +128,9 @@ impl CreateTaskCommand {
             payload_fingerprint: String::new(),
         };
         command.payload_fingerprint = command.compute_payload_fingerprint();
+        if deferred {
+            command.payload_fingerprint.push_str(":deferred");
+        }
         command
     }
 

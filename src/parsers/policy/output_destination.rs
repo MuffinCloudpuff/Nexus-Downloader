@@ -82,10 +82,17 @@ pub fn validate_save_path(cmd: &CreateTaskCommand) -> Result<(), String> {
     let Some(value) = cmd.save_path.as_deref() else {
         return Ok(());
     };
-    let path = Path::new(value);
     if cmd.source.as_deref() != Some("download")
         || !reqwest::Url::parse(&cmd.url).is_ok_and(|url| matches!(url.scheme(), "http" | "https"))
-        || !path.is_absolute()
+    {
+        return Err("save_path must be a browser-confirmed absolute file path".into());
+    }
+    validate_browser_file_path(value)
+}
+
+pub fn validate_browser_file_path(value: &str) -> Result<(), String> {
+    let path = Path::new(value);
+    if !path.is_absolute()
         || path.file_name().is_none()
         || value.contains('\0')
         || path

@@ -83,3 +83,12 @@ assert.deepEqual(await handoffAndClearBrowserDownload(mutable, async received =>
   received.id = 42;
 }), {historyCleared: true});
 console.log("handoff cleanup tests passed: acceptance-before-erase, exact ID only, unaffected downloads/files/UI, original save path, rejected handoff, nonfatal cleanup errors");
+
+// File creation must follow Chrome history cleanup, even for a one-byte file.
+const staged = [];
+erase = (_query, callback) => { staged.push("browser-cleanup"); callback([41]); };
+await handoffAndClearBrowserDownload(item, async () => {
+  staged.push("task-accepted-without-writing");
+  return async () => { staged.push("rust-transfer-started"); };
+});
+assert.deepEqual(staged, ["task-accepted-without-writing", "browser-cleanup", "rust-transfer-started"]);

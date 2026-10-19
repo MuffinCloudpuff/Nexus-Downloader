@@ -80,6 +80,8 @@ console.log("pairing tests passed: first connection, concurrent pairing, native 
 self.setTimeout = setTimeout;
 self.clearTimeout = clearTimeout;
 globalThis.fetch = async () => Response.json({browser_download_save_path: true});
+assert.equal(await fresh.supportsBrowserSavePath(), false, "an old backend cannot safely defer transfer until browser cleanup");
+globalThis.fetch = async () => Response.json({browser_download_save_path: true, browser_download_deferred_start: true});
 assert.equal(await fresh.supportsBrowserSavePath(), true);
 globalThis.fetch = async () => new Response("Not Found", {status: 404});
 assert.equal(await fresh.supportsBrowserSavePath(), false);
