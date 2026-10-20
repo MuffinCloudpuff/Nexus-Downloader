@@ -357,7 +357,7 @@ impl CoreService {
             self.stop_task_for_artifact_cleanup(&task).await?;
         }
 
-        self.wait_until_not_running(task_id, Duration::from_secs(10))
+        self.wait_until_not_running(task_id, Duration::from_secs(10), "delete")
             .await?;
 
         let cleanup = task_artifact_service::cleanup_task_artifacts(&task, &self.resume_store)
@@ -448,14 +448,11 @@ impl CoreService {
                 status: task.status,
             });
         }
-        if let Some(token) = self.queue_state.read().await.running_tasks.get(task_id) {
-            token.cancel();
-        }
-        self.queue_state
-            .write()
-            .await
-            .waiting_tasks
-            .retain(|t| t.id != task_id);
+        let token = {
+            let mut queue = self.queue_state.write().await;
+            queue.waiting_tasks.retain(|t| t.id != task_id);
+            queue.running_tasks.get(task_id).cloned()
+        };
         self.task_service
             .update_task_status(
                 task_id,
@@ -465,10 +462,31 @@ impl CoreService {
                 task.received_bytes,
             )
             .await;
+        if let Some(token) = token {
+            token.cancel();
+        }
+        self.wait_until_not_running(task_id, Duration::from_secs(10), "pause")
+            .await?;
+        if let Some(latest) = self.task_service.get_task(task_id).await {
+            if latest.status != TaskStatus::Completed {
+                self.task_service
+                    .update_task_status(
+                        task_id,
+                        TaskStatus::Paused,
+                        latest.progress,
+                        0,
+                        latest.received_bytes,
+                    )
+                    .await;
+            }
+        }
         Ok(())
     }
 
     pub async fn resume_task(&self, task_id: &str) -> Result<(), TaskControlError> {
+        // A fresh executor must never race the cancelled worker's buffered writes/manifest flush.
+        self.wait_until_not_running(task_id, Duration::from_secs(10), "resume")
+            .await?;
         let Some(mut task) = self.task_service.get_task(task_id).await else {
             return Err(TaskControlError::NotFound);
         };
@@ -519,6 +537,7 @@ impl CoreService {
         &self,
         task_id: &str,
         timeout: Duration,
+        command: &'static str,
     ) -> Result<(), TaskControlError> {
         let deadline = Instant::now() + timeout;
         while self
@@ -530,8 +549,8 @@ impl CoreService {
         {
             if Instant::now() >= deadline {
                 return Err(TaskControlError::CleanupFailed {
-                    command: "delete",
-                    message: "task worker did not stop before cleanup".to_string(),
+                    command,
+                    message: "task worker did not stop before the requested operation".to_string(),
                 });
             }
             tokio::time::sleep(Duration::from_millis(50)).await;
@@ -632,6 +651,9 @@ impl CoreService {
                         .task_service
                         .complete_task(&task.id, output_path)
                         .await;
+                }
+                Err(_) if token.is_cancelled() => {
+                    tracing::info!(task_id = %task.id, "task worker stopped by user request");
                 }
                 Err(error) => {
                     let structured_failure = error.downcast_ref::<ExecutionFailure>().cloned();
@@ -827,5 +849,45 @@ mod tests {
         http.resume_task("http").await.unwrap();
         let resumed = http.get_task("http").await.unwrap();
         assert_eq!(resumed.status, TaskStatus::Queued);
+    }
+
+    #[tokio::test]
+    async fn pause_acknowledges_only_after_worker_drain() {
+        let service = service_with_task_status(
+            task_with_kind(
+                "pause-drain",
+                ExecutionKind::HttpFile,
+                TaskStatus::Downloading,
+            ),
+            TaskStatus::Downloading,
+        )
+        .await;
+        let token = tokio_util::sync::CancellationToken::new();
+        service
+            .queue_state
+            .write()
+            .await
+            .running_tasks
+            .insert("pause-drain".into(), token.clone());
+        let queue = service.queue_state.clone();
+        let stopped = tokio::spawn(async move {
+            token.cancelled().await;
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            queue.write().await.running_tasks.remove("pause-drain");
+        });
+        service.pause_task("pause-drain").await.unwrap();
+        stopped.await.unwrap();
+        assert!(
+            !service
+                .queue_state
+                .read()
+                .await
+                .running_tasks
+                .contains_key("pause-drain")
+        );
+        assert_eq!(
+            service.get_task("pause-drain").await.unwrap().status,
+            TaskStatus::Paused
+        );
     }
 }

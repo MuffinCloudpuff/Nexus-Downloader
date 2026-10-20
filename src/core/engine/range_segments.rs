@@ -112,8 +112,13 @@ impl SegmentQueue {
 
     pub fn requeue(&mut self, mut job: SegmentJob, bytes_written: u64) -> Option<SegmentJob> {
         self.active.remove(&job.index);
+        let progressed = bytes_written > job.bytes_written;
         job.bytes_written = bytes_written.min(job.expected_size());
-        job.attempts = job.attempts.saturating_add(1);
+        job.attempts = if progressed {
+            1
+        } else {
+            job.attempts.saturating_add(1)
+        };
         self.enqueue_incomplete(job)
     }
 
@@ -236,6 +241,20 @@ mod tests {
         assert_eq!(first.end + 1, split.start);
         assert_eq!(second.index, split.index);
         assert_eq!(second.end, 99);
+    }
+
+    #[test]
+    fn progressing_recovery_does_not_exhaust_stall_retry_budget() {
+        let chunks = vec![chunk(0, 0, 99, 0)];
+        let mut queue = SegmentQueue::from_chunks(&chunks, 100);
+        for written in [10, 20, 30, 40, 50] {
+            let job = queue.pop_next().unwrap();
+            queue.requeue(job, written);
+        }
+        let job = queue.pop_next().unwrap();
+        assert_eq!(job.attempts, 1);
+        queue.requeue(job, 50);
+        assert_eq!(queue.pop_next().unwrap().attempts, 2);
     }
 
     #[test]

@@ -19,6 +19,10 @@ use tokio::io::AsyncWriteExt;
 use tokio::sync::{Notify, Semaphore};
 use tracing::info;
 
+#[cfg(test)]
+#[path = "range_recovery_tests.rs"]
+mod range_recovery_tests;
+
 const RESUME_PROGRESS_SAVE_INTERVAL_BYTES: u64 = 8 * 1024 * 1024;
 const TARGET_RANGE_SEGMENT_BYTES: u64 = 20 * 1024 * 1024;
 const MIN_RANGE_SEGMENT_BYTES: u64 = 8 * 1024 * 1024;
@@ -127,6 +131,7 @@ fn insert_raw_range_headers(headers: &mut header::HeaderMap, start: u64, end: u6
 enum RangeSegmentPolicyKind {
     Generic,
     GoogleVideo,
+    Douyin,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -161,6 +166,13 @@ fn range_segment_policy_for_url(url: &str) -> RangeSegmentPolicy {
     let host = url_host_for_log(url);
     if host == "googlevideo.com" || host.ends_with(".googlevideo.com") {
         RangeSegmentPolicy::googlevideo()
+    } else if host == "douyinvod.com" || host.ends_with(".douyinvod.com") {
+        RangeSegmentPolicy {
+            kind: RangeSegmentPolicyKind::Douyin,
+            target_segment_bytes: 4 * 1024 * 1024,
+            min_segment_bytes: 1024 * 1024,
+            lease_bytes: 2 * 1024 * 1024,
+        }
     } else {
         RangeSegmentPolicy::generic()
     }
@@ -171,7 +183,12 @@ fn plan_range_segment_count_with_policy(
     max_active_connections: usize,
     policy: RangeSegmentPolicy,
 ) -> usize {
-    if total_size <= SMALL_FILE_SINGLE_RANGE_BYTES {
+    let single_range_limit = if policy.kind == RangeSegmentPolicyKind::Douyin {
+        policy.target_segment_bytes
+    } else {
+        SMALL_FILE_SINGLE_RANGE_BYTES
+    };
+    if total_size <= single_range_limit {
         return 1;
     }
 
@@ -290,6 +307,7 @@ fn mark_sparse_best_effort(_path: &Path) {}
 async fn prepare_sparse_direct_output_file(
     output_path: &Path,
     total_size: u64,
+    preserve_validated_output: bool,
 ) -> Result<Arc<std::fs::File>> {
     let output_path = output_path.to_path_buf();
     tokio::task::spawn_blocking(move || -> Result<Arc<std::fs::File>> {
@@ -297,11 +315,17 @@ async fn prepare_sparse_direct_output_file(
             std::fs::create_dir_all(parent)?;
         }
         let file = std::fs::OpenOptions::new()
-            .create(true)
+            .create(!preserve_validated_output)
             .read(true)
             .write(true)
-            .truncate(true)
+            .truncate(!preserve_validated_output)
             .open(&output_path)?;
+        if preserve_validated_output {
+            anyhow::ensure!(
+                file.metadata()?.len() == total_size,
+                "validated resume output changed before reopening"
+            );
+        }
         mark_sparse_best_effort(&output_path);
         file.set_len(total_size)?;
         Ok(Arc::new(file))
@@ -428,7 +452,14 @@ async fn fetch_range_segment(
         next_offset,
     );
 
-    let mut res = match client.get(url).headers(chunk_headers).send().await {
+    let response = tokio::select! {
+        _ = token.cancelled() => anyhow::bail!("任务已取消"),
+        response = tokio::time::timeout(std::time::Duration::from_secs(15),
+            client.get(url).headers(chunk_headers).timeout(std::time::Duration::from_secs(120)).send()) =>
+            response.map_err(|_| anyhow::anyhow!("range response headers timed out"))
+                .and_then(|response| response.map_err(anyhow::Error::from)),
+    };
+    let mut res = match response {
         Ok(res) => res,
         Err(error) => {
             tracing::warn!(
@@ -458,8 +489,25 @@ async fn fetch_range_segment(
         anyhow::bail!("Range segment {} returned HTTP {}", job.index, status);
     }
 
+    let started = std::time::Instant::now();
+    let initial_written = local_downloaded;
+    let mut watchdog = crate::core::engine::range_recovery::RangeWatchdog::new(
+        range_segment_policy_for_url(url).kind == RangeSegmentPolicyKind::Douyin,
+    );
+    let mut health_tick = tokio::time::interval(std::time::Duration::from_millis(250));
     loop {
         tokio::select! {
+            _ = health_tick.tick() => {
+                if let Some(reason) = watchdog.check(started.elapsed(), local_downloaded.saturating_sub(initial_written)) {
+                    buffered_writer.flush().await?;
+                    save_chunk_progress(&manifest, &resume_store, url, job.index,
+                        crate::core::resume::ChunkStatus::Pending, local_downloaded).await;
+                    tracing::info!(chunk_index=job.index, next_offset, reason,
+                        elapsed_ms=started.elapsed().as_millis(), bytes_received=local_downloaded.saturating_sub(initial_written),
+                        "http range slow connection reopening from saved offset");
+                    return Ok((SegmentFetchStatus::Recoverable, local_downloaded));
+                }
+            }
             _ = token.cancelled() => {
                 let _ = buffered_writer.flush().await;
                 save_chunk_progress(
@@ -828,7 +876,13 @@ impl UniversalDownloader {
         let range_segment_policy = range_segment_policy_for_url(url);
         let mut num_chunks =
             plan_range_segment_count_with_policy(total_size, max_connections, range_segment_policy);
-        let max_active_connections = max_connections.min(num_chunks);
+        let max_active_connections = max_connections.min(num_chunks).min(
+            if range_segment_policy.kind == RangeSegmentPolicyKind::Douyin {
+                8
+            } else {
+                max_connections
+            },
+        );
         let site_key = site_key_from_url(url);
         let site_history = match site_performance_store() {
             Some(store) => store.get(&site_key).await,
@@ -918,11 +972,19 @@ impl UniversalDownloader {
             let _ = resume_store.save_manifest(&manifest).await;
         }
 
-        let output_file = prepare_sparse_direct_output_file(output_path, total_size).await?;
+        let output_file =
+            prepare_sparse_direct_output_file(output_path, total_size, !should_create_stage)
+                .await?;
 
         let stage_manifest = manifest.stages.get(url).unwrap().clone();
         num_chunks = stage_manifest.chunks.len();
-        let max_active_connections = max_connections.min(num_chunks);
+        let max_active_connections = max_connections.min(num_chunks).min(
+            if range_segment_policy.kind == RangeSegmentPolicyKind::Douyin {
+                8
+            } else {
+                max_connections
+            },
+        );
 
         let range_tuner = RangeTunerRuntime::new(max_active_connections, tuner_history);
         let mut join_set = tokio::task::JoinSet::new();
@@ -1083,6 +1145,8 @@ impl UniversalDownloader {
                             notify_clone.notify_waiters();
                         }
                         Ok((SegmentFetchStatus::Recoverable, bytes_written)) => {
+                            anyhow::ensure!(bytes_written > job.completed_bytes() || job.attempts < 4,
+                                "range request made no progress after repeated recovery attempts");
                             let split_job = {
                                 let mut queue = queue_clone.lock().await;
                                 queue.requeue(job.clone(), bytes_written)
