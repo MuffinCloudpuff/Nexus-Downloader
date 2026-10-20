@@ -99,3 +99,26 @@ function task(input: Partial<GenericTaskSummary> & Pick<GenericTaskSummary, "tas
   assert.equal(state.mediaTitle, "next");
   assert.equal(state.identity, "v2");
 }
+import {fullscreenOverlayMode, overlayPosition, taskActionForOverlay} from "./media-controls";
+
+for (const phase of ["downloading", "queued", "parsing", "resuming", "starting"]) {
+  if (taskActionForOverlay({taskId: "task", phase}) !== "pause") throw new Error(`pause missing: ${phase}`);
+}
+if (taskActionForOverlay({taskId: "task", phase: "paused"}) !== "resume") throw new Error("resume missing");
+for (const phase of ["resolving", "merging", "completed", "failed"]) {
+  if (taskActionForOverlay({taskId: "task", phase}) !== null) throw new Error(`invalid action: ${phase}`);
+}
+if (taskActionForOverlay({phase: "downloading"}) !== null) throw new Error("unbound action");
+const windowed = {left: 80, right: 880, top: 100, bottom: 550, width: 800, height: 450};
+assert.deepEqual(overlayPosition(windowed, 140, 32, 1280, 720), {left: 892, top: 112});
+assert.equal(fullscreenOverlayMode(windowed, 1280, 720, false, "www.bilibili.com"), false);
+assert.equal(fullscreenOverlayMode(windowed, 1280, 720, false, "www.youtube.com"), false);
+const vertical = {left: 400, right: 880, top: 0, bottom: 720, width: 480, height: 720};
+assert.equal(fullscreenOverlayMode(vertical, 1280, 720, false, "www.douyin.com"), true);
+assert.equal(fullscreenOverlayMode(vertical, 1280, 720, false, "www.bilibili.com"), false);
+assert.equal(fullscreenOverlayMode(vertical, 1280, 720, true, "www.bilibili.com"), true);
+assert.deepEqual(overlayPosition(vertical, 140, 32, 1280, 720, true), {left: 728, top: 12});
+const commentsOpen = {left: 0, right: 960, top: 0, bottom: 720, width: 960, height: 720};
+assert.deepEqual(overlayPosition(commentsOpen, 140, 32, 1280, 720, true), {left: 808, top: 12});
+const scrolled = {left: -20, right: 940, top: -100, bottom: 620, width: 960, height: 720};
+assert.deepEqual(overlayPosition(scrolled, 140, 32, 1280, 720, true), {left: 788, top: 12});

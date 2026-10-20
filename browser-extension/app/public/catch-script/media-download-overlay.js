@@ -9,6 +9,8 @@
     let enabled = false;
     let hostHovered = false;
     let fullscreenRevealTimer = 0;
+    let fullscreenOverlay = false;
+    let observedMedia = null;
 
     host.id = "ghostDownloaderMediaDownload";
     Object.assign(host.style, {
@@ -89,8 +91,23 @@
     let mediaCounter = 0;
     const stateByMedia = new WeakMap();
     const stateByTaskId = new Map();
+    const pendingTaskActions = new Set();
     const TERMINAL_STATE_TTL_MS = 30000;
     const overlayStateCore = globalThis.GD3OverlayMediaState || null;
+    const overlayControls = globalThis.GD3OverlayMediaControls;
+    const listeners = new AbortController();
+    let updateInterval = 0;
+    const lifecycle = overlayControls.claimMediaOverlay(host, () => {
+        disableOverlay();
+        listeners.abort();
+        clearInterval(updateInterval);
+        clearTimeout(resetTimer);
+        clearTimeout(fullscreenRevealTimer);
+        playerResizeObserver.disconnect();
+        for (const state of stateByTaskId.values()) clearStateTimers(state);
+        try { chrome.runtime.onMessage.removeListener(onRuntimeMessage); } catch { /* Reloaded extension. */ }
+    }, () => Boolean(chrome.runtime?.id));
+    const playerResizeObserver = new ResizeObserver(scheduleUpdate);
 
     function createTraceId() {
         const random = typeof crypto?.randomUUID === "function"
@@ -395,6 +412,7 @@
     }
 
     function updateVisibilityFor(selected, isFullscreen) {
+        fullscreenOverlay = isFullscreen;
         const state = selected?.media ? stateForMedia(selected.media) : null;
         const busy = isBusyState(state);
         host.classList.toggle("fullscreen-auto-hide", isFullscreen && !busy);
@@ -415,13 +433,13 @@
     // Digit slots: playing (1e9) beats readyState (1e6) beats viewport area, so the user's
     // active video always wins over a paused full-screen poster.
     function mediaScore(media, rect) {
-        const playing = !media.paused && !media.ended ? 1_000_000_000 : 0;
-        return playing + media.readyState * 1_000_000 + rect.width * rect.height;
+        const playing = media.paused === false && !media.ended ? 1_000_000_000 : 0;
+        return playing + Number(media.readyState || 0) * 1_000_000 + rect.width * rect.height;
     }
 
     function findActiveMedia() {
         let selected = null;
-        for (const media of document.querySelectorAll("video")) {
+        for (const media of overlayControls?.mediaCandidates() || document.querySelectorAll("video, bwp-video")) {
             const rect = mediaRect(media);
             if (!rect) { continue; }
             const score = mediaScore(media, rect);
@@ -434,6 +452,7 @@
 
     function updatePosition() {
         updateQueued = false;
+        if (!lifecycle.active()) return;
         if (!enabled) {
             host.style.display = "none";
             return;
@@ -445,6 +464,11 @@
             return;
         }
         currentMedia = selected.media;
+        if (observedMedia !== currentMedia) {
+            playerResizeObserver.disconnect();
+            playerResizeObserver.observe(currentMedia);
+            observedMedia = currentMedia;
+        }
         stateForMedia(currentMedia);
         renderCurrentMediaState();
 
@@ -454,30 +478,12 @@
             targetParent.appendChild(host);
         }
 
+        host.style.display = "block";
         const buttonWidth = host.offsetWidth || 112;
         const buttonHeight = host.offsetHeight || 32;
-        const isFullscreen = Boolean(document.fullscreenElement)
-            || (selected.rect.width >= window.innerWidth * 0.98 && selected.rect.height >= window.innerHeight * 0.98);
-
-        host.style.display = "block";
-        const gap = 12;
-        let left = isFullscreen
-            ? window.innerWidth - buttonWidth - gap
-            : selected.rect.right + gap;
-        let top = selected.rect.top + gap;
-        if (!isFullscreen && left + buttonWidth > innerWidth - gap) {
-            left = Math.min(innerWidth - buttonWidth - gap, Math.max(gap, selected.rect.right - buttonWidth));
-            top = selected.rect.top - buttonHeight - gap;
-        }
-        if (!isFullscreen && top < gap && selected.rect.left - buttonWidth - gap >= gap) {
-            left = selected.rect.left - buttonWidth - gap;
-            top = selected.rect.top;
-        }
-        if (!isFullscreen && top < gap) {
-            top = selected.rect.bottom + gap;
-        }
-        left = Math.max(gap, Math.min(left, innerWidth - buttonWidth - gap));
-        top = Math.max(gap, Math.min(top, innerHeight - buttonHeight - gap));
+        const isFullscreen = overlayControls.fullscreenOverlayMode(selected.rect, innerWidth, innerHeight,
+            Boolean(document.fullscreenElement), location.hostname);
+        const {left, top} = overlayControls.overlayPosition(selected.rect, buttonWidth, buttonHeight, innerWidth, innerHeight, isFullscreen);
 
         host.style.left = `${left}px`;
         host.style.top = `${top}px`;
@@ -485,6 +491,7 @@
     }
 
     function enableOverlay() {
+        if (!lifecycle.active()) return;
         enabled = true;
         const targetParent = document.fullscreenElement || document.documentElement;
         if (targetParent && host.parentNode !== targetParent) {
@@ -500,6 +507,7 @@
     }
 
     function scheduleUpdate() {
+        if (!lifecycle.active()) return;
         if (updateQueued) { return; }
         updateQueued = true;
         requestAnimationFrame(updatePosition);
@@ -516,8 +524,10 @@
     }
 
     function renderState(state) {
-        button.disabled = false;
-        button.style.cursor = isBusyState(state) ? "default" : "pointer";
+        const actionable = Boolean(overlayControls.taskActionForOverlay(state));
+        button.disabled = Boolean(state?.taskId && pendingTaskActions.has(state.taskId));
+        button.style.cursor = actionable || !isBusyState(state) ? "pointer" : "default";
+        button.title = actionable ? (state.phase === "paused" ? "继续下载" : "暂停下载") : "发送当前媒体到 Nexus Downloader";
         button.style.background = "";
         button.style.color = "";
 
@@ -533,6 +543,12 @@
             const pct = Math.max(0, Math.min(100, Number(state.progress || 0) * 100));
             button.style.background = `linear-gradient(90deg, #007acc ${pct}%, rgba(255, 255, 255, 0.96) ${pct}%)`;
             button.style.color = pct > 50 ? "#fff" : "#242424";
+            return;
+        }
+
+        if (state.phase === "paused") {
+            label.textContent = "已暂停 · 点击继续";
+            setStatus("");
             return;
         }
 
@@ -585,7 +601,9 @@
     }
 
     function renderCurrentMediaState() {
-        renderState(currentMedia ? stateByMedia.get(currentMedia) : null);
+        const state = currentMedia ? stateByMedia.get(currentMedia) : null;
+        renderState(state);
+        if (state?.commandError) setStatus(state.commandError, true);
     }
 
     function formatSpeed(bytesPerSec) {
@@ -712,11 +730,36 @@
     }
 
     async function downloadMedia() {
+        if (!lifecycle.active()) return;
         const media = currentMedia && mediaRect(currentMedia)
             ? currentMedia
             : findActiveMedia()?.media;
         const mediaTitle = media ? titleForMedia(media) : document.title;
         const mediaState = media ? stateForMedia(media) : null;
+
+        const taskAction = overlayControls.taskActionForOverlay(mediaState);
+        if (taskAction) {
+            if (pendingTaskActions.has(mediaState.taskId)) return;
+            const taskId = mediaState.taskId;
+            const action = taskAction;
+            mediaState.commandError = "";
+            pendingTaskActions.add(taskId);
+            renderCurrentMediaState();
+            try {
+                const result = await chrome.runtime.sendMessage({type: "popup_task_action", taskId, action, traceId: createTraceId()});
+                if (!result?.ok) throw new Error(result?.message || "任务操作失败");
+                // Acceptance is not completion: await the daemon snapshot/event for the real phase.
+                chrome.runtime.sendMessage({type: "popup_get_state"}, snapshot => {
+                    if (!chrome.runtime.lastError) applyTaskSnapshot(snapshot?.tasks);
+                });
+            } catch (error) {
+                mediaState.commandError = error?.message || "任务操作失败";
+            } finally {
+                pendingTaskActions.delete(taskId);
+                if (isRenderedState(mediaState)) renderCurrentMediaState();
+            }
+            return;
+        }
 
         if (mediaState && isBusyState(mediaState)) {
             recordTelemetry({
@@ -852,7 +895,6 @@
                     selectionKind: resolution.selection?.kind,
                 },
             });
-
             if (ok && result?.taskId) {
                 mediaState.requestId = result.requestId || mediaState.requestId;
                 mediaState.traceId = result.traceId || mediaState.traceId;
@@ -881,32 +923,37 @@
         event.preventDefault();
         event.stopPropagation();
         void downloadMedia();
-    });
+    }, {signal: listeners.signal});
     host.addEventListener("mouseenter", () => {
         hostHovered = true;
         scheduleUpdate();
-    });
+    }, {signal: listeners.signal});
     host.addEventListener("mouseleave", () => {
         hostHovered = false;
         scheduleUpdate();
-    });
+    }, {signal: listeners.signal});
 
-    addEventListener("resize", scheduleUpdate, { passive: true });
-    addEventListener("scroll", scheduleUpdate, { passive: true });
-    document.addEventListener("fullscreenchange", scheduleUpdate, { passive: true });
+    const passive = {passive: true, signal: listeners.signal};
+    addEventListener("resize", scheduleUpdate, passive);
+    addEventListener("scroll", scheduleUpdate, passive);
+    document.addEventListener("fullscreenchange", scheduleUpdate, passive);
     document.addEventListener("mousemove", (event) => {
-        if (!document.fullscreenElement) { return; }
-        const nearRightTop = event.clientX >= window.innerWidth - 180 && event.clientY <= 96;
+        if (!fullscreenOverlay) { return; }
+        const bounds = host.getBoundingClientRect();
+        const nearRightTop = event.clientX >= bounds.left - 24 && event.clientX <= bounds.right + 24
+            && event.clientY >= bounds.top - 24 && event.clientY <= bounds.bottom + 24;
         if (nearRightTop) {
             revealFullscreenOverlay();
         }
-    }, { passive: true });
-    document.addEventListener("play", scheduleUpdate, true);
-    document.addEventListener("pause", scheduleUpdate, true);
-    document.addEventListener("loadedmetadata", scheduleUpdate, true);
-    setInterval(scheduleUpdate, 1000);
+    }, passive);
+    const capture = {capture: true, signal: listeners.signal};
+    document.addEventListener("play", scheduleUpdate, capture);
+    document.addEventListener("pause", scheduleUpdate, capture);
+    document.addEventListener("loadedmetadata", scheduleUpdate, capture);
+    updateInterval = setInterval(scheduleUpdate, 1000);
 
-    chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+    function onRuntimeMessage(message, _sender, sendResponse) {
+        if (!lifecycle.active()) return;
         if (message?.type === "task_snapshot" || message?.type === "task_updated") {
             handleTaskSnapshotMessage(message);
             return;
@@ -914,7 +961,8 @@
         if (message?.type !== "media_download_overlay_set_enabled") { return; }
         Boolean(message.enabled) ? enableOverlay() : disableOverlay();
         sendResponse({ ok: true });
-    });
+    }
+    chrome.runtime.onMessage.addListener(onRuntimeMessage);
 
     chrome.runtime.sendMessage({ type: "page_media_overlay_state" }, (result) => {
         const lastError = chrome.runtime.lastError;
@@ -927,5 +975,6 @@
 
     window.GhostDownloaderMediaButton = {
         installed: true,
+        dispose: lifecycle.release,
     };
 })();

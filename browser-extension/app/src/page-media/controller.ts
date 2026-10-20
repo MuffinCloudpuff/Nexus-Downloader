@@ -557,12 +557,20 @@ class PageMediaController {
     if (!element) {
       return { kind: "refused", message: "未识别媒体来源" };
     }
-    const session = this.sessionsByElement.get(element);
-    if (!session) {
-      return { kind: "refused", message: "未识别媒体来源" };
-    }
     const pageUrl = new URL(location.href);
     const strategy: MediaStrategy = this.registry.pick(pageUrl);
+    // These sites are resolved from the page URL by the daemon. Custom players,
+    // closed shadow DOM and a not-yet-started video must not block that path.
+    if (strategy.id === "whitelist") {
+      return safeResolveOf(strategy, {
+        pageUrl, hints, now: performance.now(), fallbackPhase: false,
+        clicked: {id: "page", state: "armed", formKind: "unknown", lastBoundAt: 0, resources: [], discriminators: new Set()},
+        findUrlsByDiscriminator: () => [], findRecentResources: () => [],
+      });
+    }
+    this.trackMediaElement(element);
+    const session = this.sessionsByElement.get(element);
+    if (!session) return { kind: "refused", message: "未识别媒体来源" };
 
     let fallbackPhase = false;
     const buildCtx = (): ResolveContext => ({

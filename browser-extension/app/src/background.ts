@@ -241,6 +241,8 @@ async function performDaemonTaskAction(taskId: string, action: string, traceId =
     command = "delete";
   } else if (action === "toggle_pause") {
     command = task?.status === "paused" || task?.status === "failed" ? "resume" : "pause";
+  } else if (action === "pause" || action === "resume") {
+    command = action;
   } else if (action === "redownload") {
     command = "resume";
   } else {
