@@ -39,7 +39,7 @@ export const formatBytes = (bytes: number) => {
 // ── Windows shell icon loader ──────────────────────────────────────────
 
 function getTypeIconUrl(ext: string, platform: string | undefined): string | null {
-  if (platform === "youtube" || platform === "bilibili" || platform === "twitter") {
+  if (platform === "youtube" || platform === "bilibili" || platform === "twitter" || platform === "douyin") {
     return null;
   }
   return `${DEFAULT_DAEMON_URL}/api/system-icon?ext=${encodeURIComponent(ext)}&v=3`;
@@ -66,6 +66,7 @@ export const getPlatformConfig = (
   if (task.platform === "youtube") return { color: "", bg: "", display: <img src="/youtub.jpg" alt="YouTube" className="w-full h-full object-cover rounded-xl" />, progressColor: "bg-red-500" };
   if (task.platform === "bilibili") return { color: "", bg: "", display: <img src="/bilibili.png" alt="Bilibili" className="w-full h-full object-cover rounded-xl" />, progressColor: "bg-[#fb7299]" };
   if (task.platform === "twitter") return { color: "", bg: "", display: <img src="/X.png" alt="X" className="w-full h-full object-cover rounded-xl dark:invert" />, progressColor: "bg-black dark:bg-white" };
+  if (task.platform === "douyin") return { color: "", bg: "", display: <img src="/douyin.png" alt="抖音" className="w-full h-full object-contain rounded-xl" />, progressColor: "bg-[#fe2c55]" };
 
   const ext = taskIconExtension(task);
 

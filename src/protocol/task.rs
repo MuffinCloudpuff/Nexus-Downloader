@@ -252,6 +252,8 @@ pub struct TaskSummary {
     pub event_cursor: u64,
     pub pack_name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub media_platform: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub output_category: Option<crate::parsers::policy::output_category::OutputCategory>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub output_path: Option<String>,
@@ -288,6 +290,7 @@ impl From<&crate::core::models::Task> for TaskSummary {
                 .trim_matches('"')
                 .to_string(),
             output_category: task.output_category.clone(),
+            media_platform: super::media_platform::for_task(task),
             output_path: Some(task.path.clone()),
             source: task.source.clone(),
         }

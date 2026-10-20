@@ -63,6 +63,7 @@ function taskTypeOf(task: TaskSummary): TaskType {
 
 function platformOf(task: TaskSummary): DownloadTask["platform"] {
   if (taskTypeOf(task) !== "video") return "other";
+  if (task.media_platform === "douyin") return "douyin";
   // Platform identity belongs to the downloader/source, never a directory name.
   const identity = `${task.pack_name || ""} ${task.source || ""}`.toLowerCase();
   const capturedMedia = task.source === "page_media";

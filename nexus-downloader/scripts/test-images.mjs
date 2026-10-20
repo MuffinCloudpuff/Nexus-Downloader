@@ -57,6 +57,13 @@ for (const title of ["B-vacation.mp4", "Y-vacation.mp4", "X-vacation.mp4"]) {
   assert.equal(taskSummaryToDownloadTask({...base, pack_name: "http", source: "browser_download", title, output_path: `D:/${title}`, output_category: "video"}).platform, "other");
 }
 const extensionless = taskSummaryToDownloadTask({...base, title: "LICENSE", output_path: "D:/LICENSE", output_category: "other"});
+const douyin = taskSummaryToDownloadTask({...base, pack_name: "bilibili_dash", media_platform: "douyin",
+  title: "抖音视频.mp4", output_path: "D:/抖音视频.mp4", output_category: "video"});
+assert.equal(douyin.platform, "douyin");
+const douyinHtml = renderToStaticMarkup(React.createElement(AppProvider, null, React.createElement(TaskCard, {task: douyin})));
+assert.match(douyinHtml, /src="\/douyin.png" alt="抖音"/);
+assert.doesNotMatch(douyinHtml, /system-icon|alt="Bilibili"|dark:invert/);
+assert.equal(taskSummaryToDownloadTask({...base, media_platform: "douyin"}).platform, "other");
 const noExtHtml = renderToStaticMarkup(React.createElement(AppProvider, null, React.createElement(TaskCard, {task: extensionless})));
 assert.match(noExtHtml, /system-icon\?ext=&amp;v=3/);
 console.log("desktop image tests passed: image category/sidebar, legacy records, Windows image/archive icons");

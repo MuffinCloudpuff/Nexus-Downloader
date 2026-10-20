@@ -1,6 +1,7 @@
 pub mod client_events;
 pub mod errors;
 pub mod events;
+mod media_platform;
 pub mod metrics;
 pub mod settings;
 pub mod task;

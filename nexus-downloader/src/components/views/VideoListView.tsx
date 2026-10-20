@@ -1,6 +1,6 @@
 import { useApp } from "../../store";
 import { compareDownloadTasksForDisplay } from "../../lib/task-sort";
-import { TaskCard, BilibiliLogo, YoutubeLogo, XLogo } from "../TaskCard";
+import { TaskCard } from "../TaskCard";
 import { DownloadTask } from "../../types";
 
 export function VideoListView() {
@@ -26,6 +26,7 @@ export function VideoListView() {
       bilibili: [] as DownloadTask[],
       youtube: [] as DownloadTask[],
       twitter: [] as DownloadTask[],
+      douyin: [] as DownloadTask[],
       other: [] as DownloadTask[],
     };
 
@@ -33,12 +34,14 @@ export function VideoListView() {
       if (task.platform === 'bilibili') platformTasks.bilibili.push(task);
       else if (task.platform === 'youtube') platformTasks.youtube.push(task);
       else if (task.platform === 'twitter') platformTasks.twitter.push(task);
+      else if (task.platform === 'douyin') platformTasks.douyin.push(task);
       else platformTasks.other.push(task);
     });
 
     platformTasks.bilibili.sort(compareDownloadTasksForDisplay);
     platformTasks.youtube.sort(compareDownloadTasksForDisplay);
     platformTasks.twitter.sort(compareDownloadTasksForDisplay);
+    platformTasks.douyin.sort(compareDownloadTasksForDisplay);
     platformTasks.other.sort(compareDownloadTasksForDisplay);
 
     return (
@@ -59,6 +62,12 @@ export function VideoListView() {
           <div className="space-y-3">
             <h3 className="font-bold text-sm text-black dark:text-white uppercase flex items-center gap-2">Twitter(X)</h3>
             {platformTasks.twitter.map(t => <TaskCard key={t.id} task={t} />)}
+          </div>
+        )}
+        {platformTasks.douyin.length > 0 && (
+          <div className="space-y-3">
+            <h3 className="font-bold text-sm text-[#fe2c55] flex items-center gap-2">抖音</h3>
+            {platformTasks.douyin.map(t => <TaskCard key={t.id} task={t} />)}
           </div>
         )}
         {platformTasks.other.length > 0 && (

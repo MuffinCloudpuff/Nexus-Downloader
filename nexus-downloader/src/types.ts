@@ -12,7 +12,7 @@ export interface DownloadTask {
   status: DownloadStatus;
   speed: number; // bytes per second
   eta: number; // seconds
-  platform?: 'youtube' | 'bilibili' | 'twitter' | 'other';
+  platform?: 'youtube' | 'bilibili' | 'twitter' | 'douyin' | 'other';
   thumbnail?: string;
   type: TaskType;
   createdAt: number;

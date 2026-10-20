@@ -126,6 +126,7 @@ export interface TaskSummary {
   speed_bytes_per_sec: number;
   event_cursor: number;
   pack_name: string;
+  media_platform?: "douyin";
   output_category?: OutputCategory;
   output_path?: string;
   source?: string;
