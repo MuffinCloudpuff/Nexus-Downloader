@@ -1,6 +1,6 @@
 # Nexus Downloader — Chrome / Edge 扩展
 
-本扩展随 Nexus Downloader v0.1.0 发布，扩展内部版本为 1.4.1。
+本扩展随 Nexus Downloader v0.1.2 发布，扩展内部版本为 1.4.3。
 
 1. 将 ZIP 完整解压到一个固定目录。
 2. 打开 `chrome://extensions` 或 `edge://extensions`，开启开发者模式。

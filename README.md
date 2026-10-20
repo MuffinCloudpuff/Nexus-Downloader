@@ -14,7 +14,7 @@ Get the Windows x64 portable application and the separate Chrome / Edge extensio
 from [GitHub Releases](https://github.com/MuffinCloudpuff/Nexus-Downloader/releases).
 The portable package includes FFmpeg, ffprobe and Deno; WebView2 Runtime is required.
 Packages contain no developer settings, pairing tokens or download history.
-See [v0.1.1 release notes](docs/releases/v0.1.1.md) for installation and checks.
+See [v0.1.2 release notes](docs/releases/v0.1.2.md) for installation and checks.
 
 ## Highlights
 
