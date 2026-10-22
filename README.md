@@ -26,6 +26,10 @@ See [v0.1.3 release notes](docs/releases/v0.1.3.md) for installation and checks.
   YouTube, Bilibili, and X. Availability depends on the site and media access.
 - **One task list:** the backend owns task state; the React UI and extension
   synchronize with it. Deleting a task removes it from both interfaces.
+- **Compact download progress:** accepted downloads automatically open the browser
+  extension's toolbar panel with only the current file. Completion or successful
+  deletion dismisses it; manual toolbar clicks still show the full task list.
+  Automatic opening requires Chrome / Edge 127+; older browsers retain manual access.
 - **Managed YouTube extractor:** yt-dlp extracts media metadata; Nexus's Rust
   engine transfers the media. Managed executable updates are verified before activation.
 - **Shared branding:** the desktop tray and browser extension use the same icons.
@@ -143,6 +147,7 @@ npm run typecheck
 npm run test:overlay
 npm run test:pairing
 npm run test:popup
+npm run test:progress
 npm run test:icons
 npm run test:branding
 ```
@@ -162,6 +167,15 @@ node tests/installed_workspace_smoke.mjs 'D:/path/to/NexusDownloaderPortable'
 
 It creates and removes only its own test tasks, verifies adjacent workspaces and
 audio/video output, and tests deleting a task while its download is active.
+
+`tests/progress_window_smoke.cjs` tests the real Chromium toolbar popup against an
+already-running portable backend using local fixture downloads and a fresh browser
+profile. Install Playwright and Chromium for this optional test, or provide
+`PLAYWRIGHT_MODULE` and `PLAYWRIGHT_CHROMIUM_EXECUTABLE`. Override
+`NEXUS_PORTABLE_DIR` and `NEXUS_EXTENSION_PATH` when the portable installation and
+built extension are outside `dist-portable/NexusDownloaderPortable` and
+`browser-extension/chromium`. It does not read your browser profile or modify
+existing download tasks; test output under `output/playwright/` is ignored by Git.
 
 ## Third-party components
 

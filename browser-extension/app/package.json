@@ -1,13 +1,14 @@
 {
   "name": "gd3-browser-extension",
   "private": true,
-  "version": "1.4.4",
+  "version": "1.4.5",
   "type": "module",
   "scripts": {
     "build": "node ./scripts/build.mjs",
     "test:overlay": "node ./scripts/test-overlay.mjs",
     "test:pairing": "node ./scripts/test-pairing.mjs",
     "test:popup": "node ./scripts/test-popup.mjs",
+    "test:progress": "node ./scripts/test-progress-window.mjs",
     "test:icons": "node ./scripts/test-brand-icons.mjs",
     "test:branding": "node ./scripts/test-branding.mjs",
     "test:downloads": "node ./scripts/test-download-target.mjs",

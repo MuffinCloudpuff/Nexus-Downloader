@@ -6,6 +6,7 @@ import type {
     PopupView,
 } from "./shared/types";
 import {createDaemonClient} from "./background/daemon-client";
+import {createDownloadProgressPopup} from "./background/download-progress-popup";
 import {createFeatureBridge} from "./background/feature-bridge";
 import {createMediaBridge} from "./background/media-bridge";
 import {createResourceBridge} from "./background/resource-bridge";
@@ -27,7 +28,6 @@ import {
     eraseDownloadFromHistory,
     findTab,
     loadFromLocalStorage,
-    openActionPopup,
     queryTabs,
 } from "./background/chrome-helpers";
 import {onSendHeadersExtraInfoSpec} from "./shared/browser";
@@ -71,6 +71,7 @@ function notifyTaskUpdated(task: GenericTaskSummary | null) {
 }
 
 const daemonClient = createDaemonClient();
+const downloadProgressPopup = createDownloadProgressPopup();
 const browserDownloadRequests = createBrowserDownloadRequestPolicy();
 const clientTelemetry = createClientTelemetry((events) => daemonClient.sendClientEvents(events));
 const taskStore = createTaskStore();
@@ -177,6 +178,7 @@ async function createDaemonTask(request: CreateTaskHttpReq): Promise<DesktopRequ
       notifyTaskUpdated(acceptedTask);
     }
     taskSubscriptions.subscribeTask(response.task_id, response.event_cursor ?? 0);
+    if (!request.payload.defer_start) void downloadProgressPopup.show(response.task_id);
     void refreshDaemonTasks().catch(() => {
       // The accepted task is already in the local store; refresh is best-effort.
     });
@@ -326,6 +328,9 @@ const resourceBridge = createResourceBridge({
   startBrowserTask: async id => {
     const result = await daemonClient.sendTaskCommand(id, "start");
     if (!result.command_accepted) throw new Error("浏览器任务已创建，但后台尚未启动传输");
+    // Browser history cleanup has finished before this callback. Opening earlier
+    // would expose a resume button while Chrome still owns target-file cleanup.
+    void downloadProgressPopup.show(id);
   },
   recordTelemetry: recordClientTelemetry,
 });

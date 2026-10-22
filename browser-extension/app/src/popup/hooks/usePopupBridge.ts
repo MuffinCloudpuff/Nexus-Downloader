@@ -589,8 +589,9 @@ export function usePopupBridge(activeView: PopupView) {
           action,
           traceId,
         }, "任务操作失败");
-        await refreshState(activeViewRef.current);
-        setFlash("任务操作已发送", "success");
+        // The command has already succeeded. A transient snapshot refresh
+        // failure must not turn successful deletion into a reported failure.
+        await refreshState(activeViewRef.current).catch(() => {});
         recordClientTelemetry({
           event_type: "client.ui_state",
           trace_id: result.traceId || traceId,
@@ -601,6 +602,7 @@ export function usePopupBridge(activeView: PopupView) {
           message: "任务操作已发送",
           details: { busy: false },
         });
+        return true;
       } catch (error) {
         const message = errorMessageOr(error, "任务操作失败");
         setFlash(message, "error");
@@ -614,6 +616,7 @@ export function usePopupBridge(activeView: PopupView) {
           message,
           details: { busy: false },
         });
+        return false;
       } finally {
         updateBusyState(setBusyTaskIds, taskId, false);
       }

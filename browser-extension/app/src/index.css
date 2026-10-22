@@ -19,6 +19,20 @@ body {
   height: 100%;
 }
 
+/* Only the automatically opened one-task panel has intrinsic height. Break
+   every percentage-height ancestor so wrapped card controls can grow it. */
+html[data-progress-popup="true"],
+html[data-progress-popup="true"] body,
+html[data-progress-popup="true"] #app,
+html[data-progress-popup="true"] .gd4b-provider {
+  height: auto;
+  min-height: 0;
+}
+
+html[data-progress-popup="true"] body {
+  overflow-y: auto;
+}
+
 button,
 input,
 select,
