@@ -40,22 +40,28 @@ pub fn auto_register(app_data_dir: &str) {
 
     // Write registry
     let hkcu = RegKey::predef(HKEY_CURRENT_USER);
-    let key_path = "Software\\Google\\Chrome\\NativeMessagingHosts\\com.gd3.nexusdownloader";
-    match hkcu.create_subkey(key_path) {
-        Ok((key, _disp)) => {
-            let manifest_abs = manifest_path.canonicalize().unwrap_or(manifest_path);
-            let mut path_str = manifest_abs.to_string_lossy().to_string();
-            if path_str.starts_with("\\\\?\\") {
-                path_str = path_str["\\\\?\\".len()..].to_string();
+    for key_path in [
+        "Software\\Google\\Chrome\\NativeMessagingHosts\\com.gd3.nexusdownloader",
+        "Software\\Microsoft\\Edge\\NativeMessagingHosts\\com.gd3.nexusdownloader",
+    ] {
+        match hkcu.create_subkey(key_path) {
+            Ok((key, _disp)) => {
+                let manifest_abs = manifest_path
+                    .canonicalize()
+                    .unwrap_or_else(|_| manifest_path.clone());
+                let mut path_str = manifest_abs.to_string_lossy().to_string();
+                if path_str.starts_with("\\\\?\\") {
+                    path_str = path_str["\\\\?\\".len()..].to_string();
+                }
+                if let Err(e) = key.set_value("", &path_str) {
+                    tracing::warn!("Failed to set registry value for Native Messaging: {}", e);
+                } else {
+                    tracing::info!("Native Messaging Host auto-registered successfully.");
+                }
             }
-            if let Err(e) = key.set_value("", &path_str) {
-                tracing::warn!("Failed to set registry value for Native Messaging: {}", e);
-            } else {
-                tracing::info!("Native Messaging Host auto-registered successfully.");
+            Err(e) => {
+                tracing::warn!("Failed to open/create Native Messaging registry key: {}", e);
             }
-        }
-        Err(e) => {
-            tracing::warn!("Failed to open/create Native Messaging registry key: {}", e);
         }
     }
 }

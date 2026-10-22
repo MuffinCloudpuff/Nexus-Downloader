@@ -450,11 +450,12 @@ async function initialize() {
 
   daemonClient.ensureReconnectAlarm();
 
-  // Retry pairing/connection directly. A native "ping" has no response and must
-  // not be awaited before connect(), or recovery can stall indefinitely.
+  // Also probe an apparently connected daemon: a closed idle SSE connection
+  // must not leave the popup permanently reporting an old connected state.
+  // connect() coalesces overlapping probes and pairs only when necessary.
   setInterval(() => {
     const state = daemonClient.buildSnapshot().connectionState;
-    if (state !== "connected" && state !== "connecting") {
+    if (state !== "connecting") {
       void refreshDaemonTasks().catch(() => {
         notifyTaskSnapshot(taskStore.getTasks());
       });

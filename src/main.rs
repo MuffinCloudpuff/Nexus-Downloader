@@ -40,16 +40,28 @@ async fn main() {
         .unwrap()
         .to_path_buf();
 
-    // 1. 初始化可持久化配置
-    let config_dir = exe_dir.join("config");
-    let _ = tokio::fs::create_dir_all(&config_dir).await;
     // Browser native-messaging processes only provide pairing. They must not
-    // load/recover the task store or start another scheduler before returning.
+    // create tokens, load tasks or start another scheduler.
     if is_native_messaging {
-        let auth_store = Arc::new(PairingStore::new(config_dir.join("pairing_token.txt")));
-        gd3_daemon::native_messaging::start_native_messaging_host(auth_store).await;
+        gd3_daemon::native_messaging::start_native_messaging_host().await;
         return;
     }
+    // Claim the endpoint before touching pairing state or browser registration.
+    // A second daemon must not overwrite the active daemon's registration.
+    let http_addr =
+        std::env::var("GD3_HTTP_ADDR").unwrap_or_else(|_| "127.0.0.1:14371".to_string());
+    let listener = tokio::net::TcpListener::bind(&http_addr)
+        .await
+        .unwrap_or_else(|error| panic!("Failed to bind HTTP listener {http_addr}: {error}"));
+    let config_dir = exe_dir.join("config");
+    tokio::fs::create_dir_all(&config_dir)
+        .await
+        .expect("Cannot create configuration directory");
+    let auth_store = Arc::new(PairingStore::new(config_dir.join("pairing_token.txt")));
+    auth_store
+        .issue_token()
+        .await
+        .expect("Cannot initialize pairing token");
     let settings_path = config_dir.join("settings.json");
     let settings_service = Arc::new(SettingsService::load(settings_path.to_str().unwrap()).await);
 
@@ -100,16 +112,9 @@ async fn main() {
         registry.clone(),
         settings_service.clone(),
     ));
-    let auth_store = Arc::new(PairingStore::new(config_dir.join("pairing_token.txt")));
-
     // 6. HTTP API 是浏览器扩展和桌面 UI 的主协议入口，主进程围绕它常驻。
     let app =
         gateway::http_api::create_router(core_service, app_service, settings_service, auth_store);
-    let http_addr =
-        std::env::var("GD3_HTTP_ADDR").unwrap_or_else(|_| "127.0.0.1:14371".to_string());
-    let listener = tokio::net::TcpListener::bind(&http_addr)
-        .await
-        .unwrap_or_else(|error| panic!("Failed to bind HTTP listener {http_addr}: {error}"));
     tracing::info!("🚀 HTTP REST API listening on: http://{}", http_addr);
     gd3_daemon::services::yt_dlp_update_service::spawn_update_checker();
     axum::serve(listener, app)

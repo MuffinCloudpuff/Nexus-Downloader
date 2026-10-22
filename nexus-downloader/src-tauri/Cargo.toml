@@ -1,6 +1,6 @@
 [package]
 name = "nexus-downloader"
-version = "0.1.2"
+version = "0.1.3"
 description = "Nexus Downloader desktop shell"
 authors = ["gd3-daemon"]
 edition = "2021"

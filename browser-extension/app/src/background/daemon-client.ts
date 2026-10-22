@@ -83,10 +83,11 @@ function parseSseEvents(buffer: string): { events: string[]; rest: string } {
 
 export function createDaemonClient() {
   let connectionState: DesktopConnectionState = "missing_token";
-  let connectionMessage = "待配对";
+  let connectionMessage = "等待后台启动，将自动连接";
   let desktopVersion = "";
   let pairToken = "";
   let pairingPromise: Promise<string> | null = null;
+  let connectionPromise: Promise<TaskSummary[]> | null = null;
   let serverUrl = DEFAULT_SERVER_URL;
 
   function setConnectionState(state: DesktopConnectionState, message: string) {
@@ -136,9 +137,9 @@ export function createDaemonClient() {
       const body = await parseResponseBody<T & { error?: unknown }>(response);
       if (!response.ok) {
         if (isUnauthorizedStatus(response.status)) {
-          setConnectionState("unauthorized", "配对令牌无效，请重新配对");
-          // Auto-repair on next connection attempt by clearing the token
-          void setToken("");
+          // Persist removal before a retry so an old token cannot race the new one.
+          await setToken("");
+          setConnectionState("disconnected", "配对已失效，正在等待自动重新连接");
         }
         const maybeError = body.json && typeof body.json === "object" ? (body.json as { error?: any }).error : undefined;
         const fallback = isUnauthorizedStatus(response.status)
@@ -242,7 +243,7 @@ export function createDaemonClient() {
     pairingPromise = new Promise<string>((resolve, reject) => {
       let settled = false;
       const timeoutId = self.setTimeout(() => {
-        fail("自动配对超时，请确认托盘服务正在运行");
+        fail("等待后台启动，将自动重试（连接超时）");
       }, HTTP_TIMEOUT_MS);
       function fail(message: string) {
         if (settled) return;
@@ -259,10 +260,14 @@ export function createDaemonClient() {
             const nativeError = chrome.runtime.lastError;
             if (settled) return;
             if (nativeError) {
-              fail("Native Messaging 配对失败: " + (nativeError.message || "未知错误"));
+              fail("等待后台连接，将自动重试。浏览器桥接: " + (nativeError.message || "未知错误"));
               return;
             }
             try {
+              if (response?.error === "daemon_unavailable") {
+                fail("等待后台启动，将自动连接");
+                return;
+              }
               if (typeof response?.token !== "string" || !response.token.trim()) {
                 fail("自动配对失败: 未收到有效令牌");
                 return;
@@ -312,18 +317,25 @@ export function createDaemonClient() {
     });
   }
 
-  async function connect(): Promise<TaskSummary[]> {
+  function connect(): Promise<TaskSummary[]> {
+    if (!connectionPromise) {
+      connectionPromise = connectOnce().finally(() => { connectionPromise = null; });
+    }
+    return connectionPromise;
+  }
+
+  async function connectOnce(): Promise<TaskSummary[]> {
     if (!pairToken) {
       await requestPairing();
     }
 
     if (!pairToken) {
       clearConnection();
-      setConnectionState("missing_token", "待配对");
+      setConnectionState("missing_token", "等待后台启动，将自动连接");
       return [];
     }
 
-    setConnectionState("connecting", "连接中");
+    if (connectionState !== "connected") setConnectionState("connecting", "连接中");
     try {
       const tasks = await getTasks();
       desktopVersion = "rust-daemon";
@@ -332,7 +344,9 @@ export function createDaemonClient() {
     } catch (error) {
       if (connectionState !== "unauthorized") {
         desktopVersion = "";
-        setConnectionState("disconnected", error instanceof Error ? error.message : "连接失败");
+        setConnectionState("disconnected", error instanceof TypeError
+          ? "等待后台启动，将自动连接"
+          : error instanceof Error ? error.message : "等待后台连接，将自动重试");
       }
       throw error;
     }
@@ -363,7 +377,7 @@ export function createDaemonClient() {
     await localStorageSet({ [PAIR_TOKEN_KEY]: pairToken });
     if (!pairToken) {
       clearConnection();
-      setConnectionState("missing_token", "待配对");
+      setConnectionState("missing_token", "等待后台启动，将自动连接");
     }
   }
 
@@ -404,7 +418,7 @@ export function createDaemonClient() {
   }
 
   function onReconnectAlarm(alarm: chrome.alarms.Alarm, reconnect: () => void) {
-    if (alarm.name !== RECONNECT_ALARM || connectionState === "connected") {
+    if (alarm.name !== RECONNECT_ALARM || connectionState === "connecting") {
       return;
     }
     reconnect();

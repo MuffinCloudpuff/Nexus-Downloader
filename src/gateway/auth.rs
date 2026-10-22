@@ -25,7 +25,9 @@ impl PairingStore {
     }
 
     pub async fn issue_token(&self) -> Result<String> {
-        if let Some(existing_token) = self.current_token.read().await.clone() {
+        // Serialize issuance and revocation: only the daemon owns this store.
+        let mut current = self.current_token.write().await;
+        if let Some(existing_token) = current.clone() {
             return Ok(existing_token);
         }
 
@@ -34,7 +36,7 @@ impl PairingStore {
             tokio::fs::create_dir_all(parent).await?;
         }
         tokio::fs::write(&self.token_path, &token).await?;
-        *self.current_token.write().await = Some(token.clone());
+        *current = Some(token.clone());
         Ok(token)
     }
 
@@ -52,10 +54,11 @@ impl PairingStore {
     }
 
     pub async fn revoke(&self) -> Result<()> {
-        *self.current_token.write().await = None;
+        let mut current = self.current_token.write().await;
         if Path::new(&self.token_path).exists() {
             tokio::fs::remove_file(&self.token_path).await?;
         }
+        *current = None;
         Ok(())
     }
 }
@@ -101,5 +104,26 @@ mod tests {
         assert!(store.validate(&third).await);
 
         let _ = std::fs::remove_file(&token_path);
+    }
+
+    #[tokio::test]
+    async fn concurrent_first_pairing_uses_one_persisted_token() {
+        let path = std::env::temp_dir().join(format!(
+            "nexus_pairing_concurrent_{}.txt",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&path);
+        let store = PairingStore::new(&path);
+        let (a, b, c) = tokio::join!(
+            store.issue_token(),
+            store.issue_token(),
+            store.issue_token()
+        );
+        let a = a.unwrap();
+        assert_eq!(a, b.unwrap());
+        assert_eq!(a, c.unwrap());
+        assert!(store.validate(&a).await);
+        assert!(PairingStore::new(&path).validate(&a).await);
+        store.revoke().await.unwrap();
     }
 }

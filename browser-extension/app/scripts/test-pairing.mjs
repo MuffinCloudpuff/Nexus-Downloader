@@ -71,7 +71,7 @@ nativeCall = () => {};
 const stalled = createDaemonClient();
 const pending = stalled.requestPairing();
 expire();
-await assert.rejects(pending, /自动配对超时/);
+await assert.rejects(pending, /等待后台启动/);
 assert.equal(stalled.buildSnapshot().connectionState, "disconnected");
 console.log("pairing tests passed: first connection, concurrent pairing, native error, timeout");
 
@@ -88,3 +88,51 @@ assert.equal(await fresh.supportsBrowserSavePath(), false);
 globalThis.fetch = async () => Response.json({});
 assert.equal(await fresh.supportsBrowserSavePath(), false);
 console.log("daemon save-path capability compatibility tests passed");
+
+// Offline native bridge does not create/store a token. A later retry pairs itself.
+nativeCall = callback => callback({error: "daemon_unavailable", retryable: true});
+const waiting = createDaemonClient();
+await assert.rejects(waiting.connect(), /等待后台启动/);
+assert.equal(waiting.hasToken(), false);
+assert.equal(waiting.buildSnapshot().connectionState, "disconnected");
+nativeCall = callback => callback({token: "test-native-token"});
+globalThis.fetch = async () => Response.json({tasks: []});
+await waiting.connect();
+assert.equal(waiting.isReady(), true);
+
+// Revoked/stale token is cleared, and the next automatic attempt repairs it.
+globalThis.fetch = async () => new Response("unauthorized", {status: 401});
+await assert.rejects(waiting.connect());
+assert.equal(waiting.hasToken(), false);
+globalThis.fetch = async () => Response.json({tasks: []});
+await waiting.connect();
+assert.equal(waiting.isReady(), true);
+
+// Persisted state survives service-worker suspension; alarms drive retries.
+const resumed = createDaemonClient();
+await resumed.loadPersistentState();
+await resumed.connect();
+assert.equal(resumed.isReady(), true);
+globalThis.fetch = async () => { throw new TypeError("Failed to fetch"); };
+await assert.rejects(resumed.connect());
+assert.match(resumed.buildSnapshot().connectionMessage, /等待后台启动/);
+globalThis.fetch = async () => Response.json({tasks: []});
+await resumed.connect();
+assert.equal(resumed.isReady(), true);
+console.log("automatic pairing recovery passed: offline, startup, revoked token, worker reload, restart");
+
+let retryAlarm;
+chrome.alarms = {create: (name, options) => { retryAlarm = {name, options}; }};
+resumed.ensureReconnectAlarm();
+assert.equal(retryAlarm.options.periodInMinutes, 1);
+let alarmProbe;
+resumed.onReconnectAlarm({name: 'unrelated'}, () => { throw new Error('Unrelated alarm must be ignored'); });
+globalThis.fetch = async () => { throw new TypeError('offline'); };
+resumed.onReconnectAlarm({name: retryAlarm.name}, () => { alarmProbe = resumed.connect(); });
+await assert.rejects(alarmProbe);
+assert.match(resumed.buildSnapshot().connectionMessage, /等待后台启动/);
+globalThis.fetch = async () => Response.json({tasks: []});
+resumed.onReconnectAlarm({name: retryAlarm.name}, () => { alarmProbe = resumed.connect(); });
+await alarmProbe;
+assert.equal(resumed.isReady(), true);
+console.log('reconnect alarm passed: detects offline while previously connected, then recovers');
